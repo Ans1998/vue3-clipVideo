@@ -34,6 +34,7 @@ export interface ExportResult {
   format: ExportFormat
   exporterId: string
   warnings: string[]
+  savedToDirectory?: boolean
 }
 
 export interface ExportCapabilities {

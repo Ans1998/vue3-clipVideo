@@ -9,13 +9,10 @@ const CHANNELS = 2
 async function decodeMaterial(id: string): Promise<AudioBuffer | null> {
   const blob = await materialStorage.getBlob(id)
   if (!blob) return null
-  const context = new AudioContext()
+  const context = new OfflineAudioContext(CHANNELS, 1, SAMPLE_RATE)
   try {
-    const buffer = await context.decodeAudioData(await blob.arrayBuffer())
-    await context.close()
-    return buffer
+    return await context.decodeAudioData(await blob.arrayBuffer())
   } catch {
-    await context.close()
     return null
   }
 }
@@ -46,6 +43,29 @@ export async function mixProjectAudio(project: EditorProject, startFrame: number
   }
   if (!mixed) return null
   return offline.startRendering()
+}
+
+export async function mixOccupiedAudio(project: EditorProject, frames: number[], fps: number): Promise<AudioBuffer | null> {
+  if (!frames.length) return null
+  const startFrame = frames[0]
+  const endFrame = frames[frames.length - 1] + 1
+  const mixed = await mixProjectAudio(project, startFrame, endFrame, fps)
+  if (!mixed) return null
+  if (frames.length === endFrame - startFrame) return mixed
+  const samplesPerFrame = mixed.sampleRate / fps
+  const length = Math.max(1, Math.round(frames.length * samplesPerFrame))
+  const compact = new OfflineAudioContext(mixed.numberOfChannels, length, mixed.sampleRate).createBuffer(mixed.numberOfChannels, length, mixed.sampleRate)
+  for (let channel = 0; channel < mixed.numberOfChannels; channel += 1) {
+    const source = mixed.getChannelData(channel)
+    const dest = compact.getChannelData(channel)
+    frames.forEach((frame, index) => {
+      const from = Math.round((frame - startFrame) * samplesPerFrame)
+      const to = Math.round(index * samplesPerFrame)
+      const count = Math.min(Math.round(samplesPerFrame), source.length - from, dest.length - to)
+      if (count > 0) dest.set(source.subarray(from, from + count), to)
+    })
+  }
+  return compact
 }
 
 export async function encodeAudioBuffer(buffer: AudioBuffer, encoder: AudioEncoder): Promise<void> {

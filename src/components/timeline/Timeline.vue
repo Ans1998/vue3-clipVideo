@@ -8,6 +8,7 @@ import { frameToPixel, pixelToFrame } from '@/utils/timeline/coordinate'
 import { frameToTimecode } from '@/utils/timeline/timecode'
 import { canDetachAudio, canRemoveTrack, findTrack, isClipInteractable, RULER_ROW, resolveTrackDrop, toTrackType, TRACK_ROW, TYPE_LABEL, TYPE_SHORT, visibleClips, type TrackDropHint } from '@/utils/timeline/tracks'
 import { fitPixelsPerFrame, limitedMoveDelta, trimLeftTo, trimRightTo, zoomPixelsPerFrame } from '@/utils/timeline/timing'
+import { buildRulerTicks } from '@/utils/timeline/ruler'
 import type { ClipType, TimelineClip, TimelineTrack, TrackType } from '@/types/editor'
 
 type Interaction =
@@ -56,7 +57,8 @@ const menuItems = computed<MenuItem[]>(() => {
     { id: 'delete', label: '删除', shortcut: 'Delete', disabled: !hasSelection, danger: true },
   ]
 })
-const rulerMarks = computed(() => { const fps = editor.project.settings.fps; const step = editor.pixelsPerFrame < 2 ? fps * 5 : editor.pixelsPerFrame < 5 ? fps * 2 : fps; return Array.from({ length: Math.ceil(editor.project.settings.durationFrames / step) }, (_, index) => index * step) })
+const rulerTicks = computed(() => buildRulerTicks(editor.project.settings.durationFrames, editor.pixelsPerFrame, editor.project.settings.fps, viewStart.value, viewEnd.value))
+const majorRulerTicks = computed(() => rulerTicks.value.filter((tick) => tick.kind === 'major'))
 const timelineWidth = computed(() => frameToPixel(editor.project.settings.durationFrames, editor.pixelsPerFrame))
 const dragType = computed<ClipType | null>(() => interaction.value?.kind === 'move' ? interaction.value.type : editor.project.materials.find((item) => item.id === editor.dragMaterialId)?.type ?? null)
 const dropCaption = computed(() => dragType.value ? `松开以新建${TYPE_LABEL[toTrackType(dragType.value)]}` : '拖入素材或上下拖动片段到此处可新建轨道')
@@ -231,6 +233,7 @@ function fitTimeline(): void {
   editor.pixelsPerFrame = fitPixelsPerFrame(width, editor.project.settings.durationFrames)
 }
 watch(() => editor.project.currentFrame, followPlayhead)
+watch(() => [editor.pixelsPerFrame, editor.project.settings.durationFrames], () => updateViewport())
 onMounted(() => { scroll.value?.addEventListener('scroll', updateViewport, { passive: true }); updateViewport() })
 onUnmounted(() => scroll.value?.removeEventListener('scroll', updateViewport))
 </script>
@@ -247,8 +250,9 @@ onUnmounted(() => scroll.value?.removeEventListener('scroll', updateViewport))
     </div>
   </div>
   <div class="timeline-body">
-    <div ref="labels" class="track-labels">
-      <div class="ruler-spacer" />
+    <div class="track-labels">
+      <div class="ruler-spacer">时间</div>
+      <div ref="labels" class="track-label-list">
       <div v-for="track in editor.orderedTracks" :key="track.id" class="track-label" :class="{ locked: track.locked, hidden: track.hidden, muted: track.muted, 'drop-onto': dropHint?.kind === 'onto' && dropHint.trackId === track.id }" @contextmenu="openLabelMenu($event, track)">
         <i :class="['track-kind', track.type]">{{ TYPE_SHORT[track.type] }}</i>
         <span>{{ track.name }}</span>
@@ -264,10 +268,27 @@ onUnmounted(() => scroll.value?.removeEventListener('scroll', updateViewport))
         <button type="button" class="track-add-type" title="新建文字轨" @click="editor.addTrack('text')">文</button>
         <button type="button" class="track-add-type" title="新建音频轨" @click="editor.addTrack('audio')">音</button>
       </div>
+      </div>
     </div>
     <div ref="scroll" class="timeline-scroll" @dragover="onDragOver" @dragleave="onDragLeave" @drop.prevent="dropMaterial" @contextmenu.prevent="openTrackMenu($event)">
       <div class="timeline-canvas" :style="{ width: `${timelineWidth}px` }">
-        <div class="timeline-ruler" @pointerdown="startPlayhead" @pointermove="move" @pointerup="endInteraction" @pointercancel="endInteraction"><span v-for="frame in rulerMarks" :key="frame" :style="{ left: `${frameToPixel(frame, editor.pixelsPerFrame)}px` }">{{ frameToTimecode(frame, editor.project.settings.fps) }}</span></div>
+        <div class="timeline-ruler" @pointerdown="startPlayhead" @pointermove="move" @pointerup="endInteraction" @pointercancel="endInteraction">
+          <i
+            v-for="tick in rulerTicks"
+            :key="tick.frame"
+            class="ruler-tick"
+            :class="tick.kind"
+            :style="{ left: `${frameToPixel(tick.frame, editor.pixelsPerFrame)}px` }"
+          >
+            <span v-if="tick.label">{{ tick.label }}</span>
+          </i>
+        </div>
+        <div
+          v-for="tick in majorRulerTicks"
+          :key="`grid-${tick.frame}`"
+          class="ruler-grid"
+          :style="{ left: `${frameToPixel(tick.frame, editor.pixelsPerFrame)}px` }"
+        />
         <div v-for="track in editor.orderedTracks" :key="track.id" class="timeline-track" :class="{ locked: track.locked, hidden: track.hidden, muted: track.muted, 'drop-onto': dropHint?.kind === 'onto' && dropHint.trackId === track.id }" @pointerdown="startPlayhead" @pointermove="move" @pointerup="endInteraction" @contextmenu="openTrackMenu($event, track)">
           <button v-for="clip in clipsFor(track.id)" :key="clip.id" :class="['timeline-clip', clip.type, { selected: editor.selectedClipIds.includes(clip.id) }]" :style="{ left: left(clip), width: width(clip) }" @pointerdown="startMove($event, clip)" @pointermove="move" @pointerup="endInteraction" @pointercancel="endInteraction" @contextmenu="openClipMenu($event, clip)"><span class="trim-handle left" @pointerdown="startTrim($event, clip, 'left')" /><span class="clip-title">{{ clip.name }}</span><span class="trim-handle right" @pointerdown="startTrim($event, clip, 'right')" /></button>
         </div>

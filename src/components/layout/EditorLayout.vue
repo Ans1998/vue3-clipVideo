@@ -17,18 +17,19 @@ import { useExportStore } from '@/stores/export'
 const editor = useEditorStore()
 const exporter = useExportStore()
 const libraryOpen = ref(false)
+const previewExpanded = ref(false)
 onMounted(() => { void editor.initialize() })
 </script>
 
 <template>
-  <main class="editor-shell">
+  <main :class="['editor-shell', { 'preview-expanded': previewExpanded }]">
     <div v-if="!editor.ready" class="boot-overlay">正在加载项目...</div>
     <ToastHost />
     <TopToolbar @open-library="libraryOpen = true" />
     <p v-if="editor.missingMaterials.length" class="banner-warn">{{ editor.missingMaterials.length }} 个素材丢失，可在左侧素材列表点击「关联」重新选择文件。时间轴片段会保留。</p>
     <section class="workspace">
       <aside class="left-panel"><MaterialPanel /></aside>
-      <section class="preview-panel"><PreviewStage /></section>
+      <section class="preview-panel"><PreviewStage :expanded="previewExpanded" @toggle-expand="previewExpanded = !previewExpanded" /></section>
       <aside class="right-panel"><InspectorPanel /></aside>
     </section>
     <section class="timeline-panel"><Timeline /></section>

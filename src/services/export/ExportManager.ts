@@ -4,6 +4,7 @@ import { cloneProject } from '@/services/project/factory'
 import { extensionFromMime, type VideoExporter } from '@/services/export/VideoExporter'
 import { isAbortError, TaskRunner, type TaskSnapshot } from '@/services/task/TaskProgress'
 import { sanitizeFileName } from '@/utils/format'
+import { resolveExportTimeline } from '@/utils/timeline/exportRange'
 
 export class ExportManager {
   private readonly runner = new TaskRunner()
@@ -30,7 +31,9 @@ export class ExportManager {
     const snapshot = cloneProject(project)
     const candidates = this.selectExporters(options)
     if (!candidates.length) throw new Error('当前浏览器不支持所选导出格式')
-    const totalFrames = Math.max(1, options.endFrame - options.startFrame)
+    const exportFrames = resolveExportTimeline(snapshot, options)
+    if (!exportFrames.length) throw new Error('时间轴上没有可导出的内容')
+    const totalFrames = exportFrames.length
     const unsubscribe = onProgress ? this.runner.subscribe(onProgress) : () => undefined
     try {
       let used = candidates[0]

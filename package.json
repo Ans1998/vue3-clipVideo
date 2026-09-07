@@ -1,7 +1,7 @@
 {
   "name": "vue3-clip-video",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0-test",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +10,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@vueuse/core": "^14.2.0",
     "dexie": "^4.3.0",
     "jszip": "^3.10.1",

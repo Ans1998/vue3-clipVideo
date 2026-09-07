@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { createEmptyProject } from '@/services/project/factory'
 import { DEFAULT_TRANSFORM } from '@/types/editor'
 import { mapProjectToDraft } from '@/services/jianying/JianYingMapper'
-import { canvasRatio, framesToUs, mapTransform } from '@/services/jianying/JianYingTemplate'
+import { canvasRatio, draftPathPlaceholder, framesToUs, JIANYING_MATERIAL_KEYS, JIANYING_PATH_TOKEN, mapTransform } from '@/services/jianying/JianYingTemplate'
+import { planJianYingResources } from '@/services/jianying/resources'
 import { frameToTimecode, timecodeToFrame } from '@/utils/timeline/timecode'
 import { alignedPositions } from '@/utils/scene/align'
 import { createTrack } from '@/utils/timeline/tracks'
@@ -32,19 +33,39 @@ describe('jianying mapper', () => {
       { id: 'a-1', trackId: 'audio-1', type: 'audio', materialId: 'mat-a', startFrame: 0, durationFrames: 120, offsetFrame: 0, name: 'bgm', zIndex: 2, locked: false, transform: { ...DEFAULT_TRANSFORM }, audio: { volume: 1, muted: false } },
       { id: 'text-1', trackId: 'text-1', type: 'text', startFrame: 30, durationFrames: 60, offsetFrame: 0, name: '标题', zIndex: 3, locked: false, transform: { ...DEFAULT_TRANSFORM, x: 960, y: 540, width: 800, height: 200 }, text: { content: 'Hello', fontFamily: 'Arial', fontSize: 64, fontWeight: 700, color: '#ffffff', align: 'center', lineHeight: 1.2, letterSpacing: 0 } },
     )
-    const { content, meta } = mapProjectToDraft(project)
+    const draftId = '0E685133-18CE-45ED-8CB8-2904A212EC80'
+    const resources = planJianYingResources(project, draftId)
+    const { content, meta } = mapProjectToDraft(project, resources, draftId)
     expect(meta.draft_name).toBe('样本')
-    expect(content.duration).toBe(framesToUs(300, 30))
+    expect(meta.draft_is_invisible).toBe(false)
+    expect(meta.draft_cover).toBe('draft_cover.jpg')
+    expect(content.source).toBe('default')
+    expect(content.name).toBe('')
+    expect(content.new_version).toBe('110.0.0')
+    expect((content.platform as { app_version: string; app_id: number }).app_version).toBe('5.9.0')
+    expect((content.platform as { app_id: number }).app_id).toBe(3704)
+    expect(content.duration).toBe(framesToUs(120, 30))
     expect((content.canvas_config as { ratio: string }).ratio).toBe(canvasRatio(1920, 1080))
-    const materials = content.materials as { videos: Array<{ type: string; path: string }>; audios: Array<{ path: string }>; texts: Array<{ content: string }> }
+    const materials = content.materials as Record<string, unknown> & { videos: Array<{ type: string; path: string; category_name: string; check_flag: number }>; audios: Array<{ path: string }>; texts: Array<{ content: string }>; speeds: Array<{ id: string }> }
+    for (const key of JIANYING_MATERIAL_KEYS) expect(Array.isArray(materials[key])).toBe(true)
     expect(materials.videos.map((item) => item.type).sort()).toEqual(['photo', 'video'])
-    expect(materials.videos.some((item) => item.path === 'Resources/mat-v.mp4')).toBe(true)
-    expect(materials.audios[0].path).toBe('Resources/mat-a.mp3')
-    expect(materials.texts[0].content).toBe('Hello')
-    const tracks = content.tracks as Array<{ type: number; segments: Array<{ material_id: string; target_timerange: { start: number } }> }>
-    expect(tracks.filter((track) => track.type === 0).length).toBeGreaterThan(1)
-    const textTrack = tracks.find((track) => track.type === 2)
+    expect(materials.videos[0].category_name).toBe('local')
+    expect(materials.videos[0].check_flag).toBe(63487)
+    expect(materials.videos.some((item) => item.path === `${JIANYING_PATH_TOKEN}/Resources/local/video/clip.mp4`)).toBe(true)
+    expect(draftPathPlaceholder(draftId)).toBe(JIANYING_PATH_TOKEN)
+    expect(materials.audios[0].path).toBe(`${JIANYING_PATH_TOKEN}/Resources/local/audio/bgm.mp3`)
+    expect(materials.texts[0].content).toContain('Hello')
+    const tracks = content.tracks as Array<{ type: string; name: string; segments: Array<{ material_id: string; extra_material_refs: string[]; target_timerange: { start: number } }> }>
+    expect(tracks.filter((track) => track.type === 'video').length).toBeGreaterThan(1)
+    expect(tracks.every((track) => track.name === '')).toBe(true)
+    const textTrack = tracks.find((track) => track.type === 'text')
     expect(textTrack?.segments[0].target_timerange.start).toBe(framesToUs(30, 30))
+    const mediaSegments = tracks.flatMap((track) => track.segments).filter((segment) => segment.extra_material_refs.length)
+    expect(mediaSegments.length).toBe(3)
+    expect(mediaSegments.every((segment) => materials.speeds.some((speed) => speed.id === segment.extra_material_refs[0]))).toBe(true)
+    const metaMaterials = (meta.draft_materials as Array<{ type: number; value: Array<{ file_Path: string; extra_info: string; metetype: string }> }>)[0].value
+    expect(metaMaterials.some((item) => item.file_Path === './Resources/local/video/clip.mp4' && item.metetype === 'video')).toBe(true)
+    expect(metaMaterials.some((item) => item.extra_info === 'bgm.mp3' && item.metetype === 'music')).toBe(true)
     const mapped = mapTransform(960, 540, 800, 200, 1, 1, 0, 1, 1920, 1080)
     expect(mapped.x).toBe(0)
     expect(mapped.y).toBe(0)
@@ -68,11 +89,11 @@ describe('jianying mapper', () => {
     })
     const { content, meta } = mapProjectToDraft(project)
     expect(meta.draft_name).toBe('样本')
-    expect(content.duration).toBe(framesToUs(300, 30))
+    expect(content.duration).toBe(framesToUs(90, 30))
     expect((content.canvas_config as { ratio: string }).ratio).toBe(canvasRatio(1920, 1080))
-    const textTrack = (content.tracks as Array<{ type: number; segments: Array<{ target_timerange: { start: number } }> }>).find((track) => track.type === 2)
+    const textTrack = (content.tracks as Array<{ type: string; segments: Array<{ target_timerange: { start: number } }> }>).find((track) => track.type === 'text')
     expect(textTrack?.segments[0].target_timerange.start).toBe(framesToUs(30, 30))
-    expect((content.materials as { texts: Array<{ content: string }> }).texts[0].content).toBe('Hello')
+    expect((content.materials as { texts: Array<{ content: string }> }).texts[0].content).toContain('Hello')
     const mapped = mapTransform(960, 540, 800, 200, 1, 1, 0, 1, 1920, 1080)
     expect(mapped.x).toBe(0)
     expect(mapped.y).toBe(0)

@@ -57,5 +57,11 @@ export function normalizeProject(project: EditorProject): EditorProject {
       track.name = `${TYPE_LABEL[track.type]} ${counts[track.type]}`
     }
   })
+  project.clips.forEach((clip) => {
+    if (!clip.text) return
+    if (typeof clip.text.italic !== 'boolean') clip.text.italic = false
+    if (typeof clip.text.underline !== 'boolean') clip.text.underline = false
+    if (typeof clip.text.strikethrough !== 'boolean') clip.text.strikethrough = false
+  })
   return project
 }

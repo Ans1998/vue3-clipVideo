@@ -6,7 +6,7 @@ import { materialStorage } from '@/services/storage/IndexedDBService'
 import { projectStorage } from '@/services/storage/ProjectStorage'
 import { captureProjectThumbnail } from '@/services/project/ThumbnailService'
 import { cloneProject, cloneData, createEmptyProject, normalizeProject, serializeProject } from '@/services/project/factory'
-import { DEFAULT_AUDIO, DEFAULT_TRANSFORM, type ClipType, type EditorProject, type Material, type ProjectSettings, type TextConfig, type TimelineClip, type TimelineTrack, type TrackType, type Transform } from '@/types/editor'
+import { DEFAULT_AUDIO, DEFAULT_TRANSFORM, createDefaultText, type ClipType, type EditorProject, type Material, type ProjectSettings, type TextConfig, type TimelineClip, type TimelineTrack, type TrackType, type Transform } from '@/types/editor'
 import type { ProjectSummary, StorageQuota } from '@/types/project'
 import { alignedPositions, type AlignMode } from '@/utils/scene/align'
 import { applyCanvasSize, CANVAS_PRESETS, type CanvasPresetId } from '@/utils/scene/canvas'
@@ -340,7 +340,7 @@ export const useEditorStore = defineStore('editor', () => {
     commit()
     const duration = project.value.settings.fps * 5
     const track = placeOnTrack('text', project.value.currentFrame, duration)
-    const text: TextConfig = { content: '文字', fontFamily: 'Microsoft YaHei', fontSize: 72, fontWeight: 700, color: '#ffffff', align: 'center', lineHeight: 1.2, letterSpacing: 0 }
+    const text: TextConfig = createDefaultText()
     const clip: TimelineClip = { id: nanoid(), trackId: track.id, type: 'text', startFrame: project.value.currentFrame, durationFrames: duration, offsetFrame: 0, name: text.content, zIndex: project.value.clips.length, locked: false, transform: canvasTransform(700, 150), text }
     project.value.clips.push(clip); selectClip(clip.id); growTimeline(); touch()
   }

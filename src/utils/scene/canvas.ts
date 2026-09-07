@@ -39,8 +39,8 @@ export function applyCanvasSize(project: EditorProject, width: number, height: n
   return true
 }
 
-export function fitCanvasZoom(viewWidth: number, viewHeight: number, canvasWidth: number, canvasHeight: number, padding = 80): number {
+export function fitCanvasZoom(viewWidth: number, viewHeight: number, canvasWidth: number, canvasHeight: number, padding = 80, maxZoom = 0.72): number {
   if (viewWidth <= padding || viewHeight <= padding || canvasWidth <= 0 || canvasHeight <= 0) return 0.4
   const fitted = Math.min((viewWidth - padding) / canvasWidth, (viewHeight - padding) / canvasHeight)
-  return Math.min(0.72, Math.max(0.08, fitted))
+  return Math.min(maxZoom, Math.max(0.08, fitted))
 }

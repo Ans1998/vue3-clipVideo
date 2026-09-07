@@ -64,6 +64,15 @@ function durationLabel(material: Material): string {
   if (!material.durationFrames) return ''
   return frameToTimecode(material.durationFrames, editor.project.settings.fps)
 }
+function typeLabel(type: MaterialType): string {
+  if (type === 'video') return '视频'
+  if (type === 'image') return '图片'
+  return '音频'
+}
+function seekThumb(event: Event): void {
+  const video = event.target as HTMLVideoElement
+  if (video.currentTime < 0.08) video.currentTime = 0.12
+}
 </script>
 
 <template>
@@ -74,20 +83,24 @@ function durationLabel(material: Material): string {
   <button class="upload-zone" :class="{ dragging: draggingFiles }" @click="input?.click()" @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDrop"><span>⇧</span><b>导入本地素材</b><small>拖入或点击选择视频、图片、音频</small></button>
   <p v-if="error" class="error-message">{{ error }}</p>
   <div class="material-list" @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDrop">
-    <div v-for="material in filtered" :key="material.id" class="material-row">
-      <button class="material-item" draggable="true" @dragstart="editor.dragMaterialId = material.id; $event.dataTransfer?.setData('application/x-clipforge-material', material.id)" @dragend="editor.dragMaterialId = ''" @dblclick="editor.addClip(material)">
-        <img v-if="material.type === 'image' && material.objectUrl && !material.missing" class="material-thumb" :src="material.objectUrl" alt="" />
-        <span v-else class="material-type">{{ material.type === 'video' ? 'VID' : material.type === 'image' ? 'IMG' : 'AUD' }}</span>
-        <span class="material-copy">
-          <span class="material-name">{{ material.name }}</span>
-          <small v-if="durationLabel(material)">{{ durationLabel(material) }}</small>
+    <article v-for="material in filtered" :key="material.id" class="material-card" :class="[material.type, { missing: material.missing }]">
+      <button class="material-item" draggable="true" :title="material.name" @click="editor.addClip(material)" @dragstart="editor.dragMaterialId = material.id; $event.dataTransfer?.setData('application/x-clipforge-material', material.id)" @dragend="editor.dragMaterialId = ''">
+        <span class="material-thumb-wrap">
+          <img v-if="material.type === 'image' && material.objectUrl && !material.missing" class="material-thumb" :src="material.objectUrl" alt="" />
+          <video v-else-if="material.type === 'video' && material.objectUrl && !material.missing" class="material-thumb" :src="material.objectUrl" muted playsinline preload="metadata" @loadeddata="seekThumb" />
+          <span v-else class="material-fallback">{{ typeLabel(material.type) }}</span>
+          <span class="material-type">{{ typeLabel(material.type) }}</span>
+          <span v-if="durationLabel(material)" class="material-duration">{{ durationLabel(material) }}</span>
+          <span v-if="material.missing" class="material-missing">丢失</span>
+          <span class="material-add">＋</span>
         </span>
-        <span v-if="material.missing" class="material-missing">丢失</span>
-        <span class="material-add">＋</span>
+        <span class="material-name">{{ material.name }}</span>
       </button>
-      <button v-if="material.missing" type="button" class="material-action" title="重新关联文件" @click="startRelink(material.id)">关联</button>
-      <button type="button" class="material-action danger" title="删除素材" @click="pendingDelete = material.id">×</button>
-    </div>
+      <div class="material-card-actions">
+        <button v-if="material.missing" type="button" class="material-action" title="重新关联文件" @click="startRelink(material.id)">关联</button>
+        <button type="button" class="material-action danger" title="删除素材" @click="pendingDelete = material.id">×</button>
+      </div>
+    </article>
     <p v-if="!filtered.length" class="empty-state">暂无素材<br />拖入视频、图片或音频</p>
   </div>
   <div v-if="pendingDelete" class="material-confirm">

@@ -13,8 +13,15 @@ export interface VideoExporter {
   export(project: EditorProject, options: ExportOptions, handlers?: ExportHandlers): Promise<Blob>
 }
 
-const WEBM_TYPES = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
-const MP4_TYPES = ['video/mp4;codecs=avc1.42001E', 'video/mp4;codecs=avc1.42E01E', 'video/mp4']
+const WEBM_TYPES = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+const MP4_TYPES = [
+  'video/mp4;codecs=avc1.640028,mp4a.40.2',
+  'video/mp4;codecs=avc1.4D0028,mp4a.40.2',
+  'video/mp4;codecs=avc1.640028',
+  'video/mp4;codecs=avc1.4D0028',
+  'video/mp4;codecs=avc1.42E01E',
+  'video/mp4',
+]
 
 function supportedType(candidates: string[]): string | undefined {
   if (typeof MediaRecorder === 'undefined') return undefined
@@ -30,8 +37,13 @@ export function detectExportCapabilities(): ExportCapabilities {
   }
 }
 
-export function pickRecorderMimeType(format: ExportFormat): string | undefined {
-  return format === 'mp4' ? supportedType(MP4_TYPES) ?? supportedType(WEBM_TYPES) : supportedType(WEBM_TYPES) ?? supportedType(MP4_TYPES)
+export function pickRecorderMimeType(format: ExportFormat, withAudio = false): string | undefined {
+  const preferred = format === 'mp4' ? [...MP4_TYPES, ...WEBM_TYPES] : [...WEBM_TYPES, ...MP4_TYPES]
+  if (withAudio) {
+    const withSound = preferred.filter((type) => /opus|mp4a/i.test(type))
+    return supportedType(withSound) ?? supportedType(preferred)
+  }
+  return supportedType(preferred)
 }
 
 export function extensionFromMime(mimeType: string): ExportFormat {

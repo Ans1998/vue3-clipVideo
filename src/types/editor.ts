@@ -22,6 +22,9 @@ export interface TextConfig {
   align: CanvasTextAlign
   lineHeight: number
   letterSpacing: number
+  italic?: boolean
+  underline?: boolean
+  strikethrough?: boolean
 }
 
 export interface AudioConfig {
@@ -98,4 +101,20 @@ export const DEFAULT_TRANSFORM: Transform = {
   scaleY: 1,
   rotation: 0,
   opacity: 1,
+}
+
+export function createDefaultText(content = '文字'): TextConfig {
+  return {
+    content,
+    fontFamily: 'Microsoft YaHei',
+    fontSize: 72,
+    fontWeight: 700,
+    color: '#ffffff',
+    align: 'center',
+    lineHeight: 1.2,
+    letterSpacing: 0,
+    italic: false,
+    underline: false,
+    strikethrough: false,
+  }
 }

@@ -1,6 +1,7 @@
 import type { EditorProject } from '@/types/editor'
 import { resolveActiveClips, sourceFrame, type SceneAssetResolver, type SceneSource } from '@/services/renderer/SceneRenderer'
 import { seekMediaToFrame } from '@/utils/media/seek'
+import { materialStorage } from '@/services/storage/IndexedDBService'
 
 export class MaterialAssetLoader implements SceneAssetResolver {
   private readonly media = new Map<string, SceneSource>()
@@ -37,17 +38,18 @@ export class MaterialAssetLoader implements SceneAssetResolver {
   private async load(project: EditorProject, materialId?: string): Promise<void> {
     if (!materialId || this.media.has(materialId)) return
     const material = project.materials.find((item) => item.id === materialId)
-    if (!material?.objectUrl) return
+    const objectUrl = material?.objectUrl || await materialStorage.getObjectUrl(materialId)
+    if (!material || !objectUrl) return
     if (material.type === 'image') {
       const image = new Image()
-      image.src = material.objectUrl
+      image.src = objectUrl
       await image.decode()
       this.media.set(materialId, image)
       return
     }
     if (material.type === 'video') {
       const video = document.createElement('video')
-      video.src = material.objectUrl
+      video.src = objectUrl
       video.muted = true
       video.playsInline = true
       video.preload = 'auto'

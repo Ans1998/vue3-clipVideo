@@ -1,5 +1,6 @@
 import type { EditorProject, TimelineClip } from '@/types/editor'
 import { isTrackHidden } from '@/utils/timeline/tracks'
+import { canvasFont, applyItalicSkew, textLineStart, textLineWidth, underlineY } from '@/utils/scene/textStyle'
 
 export type SceneSource = CanvasImageSource
 
@@ -49,20 +50,40 @@ export class CanvasSceneRenderer {
     const text = clip.text
     if (!text) return
     ctx.fillStyle = text.color
-    ctx.font = `${text.fontWeight} ${text.fontSize}px ${text.fontFamily}`
+    ctx.strokeStyle = text.color
+    ctx.font = canvasFont(text)
     ctx.textAlign = text.align
     ctx.textBaseline = 'middle'
+    applyItalicSkew(ctx, text.italic)
     const lines = text.content.split(/\r?\n/)
     const lineHeight = text.fontSize * text.lineHeight
-    lines.forEach((line, index) => this.fillText(ctx, line, -((lines.length - 1) * lineHeight) / 2 + index * lineHeight, text.letterSpacing))
+    lines.forEach((line, index) => this.fillText(ctx, line, -((lines.length - 1) * lineHeight) / 2 + index * lineHeight, text))
   }
 
-  private fillText(ctx: CanvasRenderingContext2D, value: string, y: number, letterSpacing: number): void {
-    if (!letterSpacing) { ctx.fillText(value, 0, y); return }
-    const glyphWidths = [...value].map((glyph) => ctx.measureText(glyph).width)
-    const totalWidth = glyphWidths.reduce((sum, width) => sum + width, 0) + Math.max(0, value.length - 1) * letterSpacing
-    let x = ctx.textAlign === 'left' ? 0 : ctx.textAlign === 'right' ? -totalWidth : -totalWidth / 2
-    ;[...value].forEach((glyph, index) => { ctx.fillText(glyph, x, y); x += glyphWidths[index] + letterSpacing })
+  private fillText(ctx: CanvasRenderingContext2D, value: string, y: number, text: NonNullable<TimelineClip['text']>): void {
+    const letterSpacing = text.letterSpacing
+    if (!letterSpacing) ctx.fillText(value, 0, y)
+    else {
+      const glyphWidths = [...value].map((glyph) => ctx.measureText(glyph).width)
+      const totalWidth = glyphWidths.reduce((sum, width) => sum + width, 0) + Math.max(0, value.length - 1) * letterSpacing
+      let x = textLineStart(ctx.textAlign, totalWidth)
+      ;[...value].forEach((glyph, index) => { ctx.fillText(glyph, x, y); x += glyphWidths[index] + letterSpacing })
+    }
+    if (!text.underline && !text.strikethrough) return
+    const width = textLineWidth(value, letterSpacing, (glyph) => ctx.measureText(glyph).width)
+    const x = textLineStart(ctx.textAlign, width)
+    ctx.lineWidth = Math.max(1, Math.round(text.fontSize / 18))
+    ctx.beginPath()
+    if (text.underline) {
+      const uy = underlineY(text.fontSize, y)
+      ctx.moveTo(x, uy)
+      ctx.lineTo(x + width, uy)
+    }
+    if (text.strikethrough) {
+      ctx.moveTo(x, y)
+      ctx.lineTo(x + width, y)
+    }
+    ctx.stroke()
   }
 
   private renderPlaceholder(ctx: CanvasRenderingContext2D, clip: TimelineClip): void {

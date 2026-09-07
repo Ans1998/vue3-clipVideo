@@ -1,6 +1,7 @@
 export interface PlaybackTarget {
   fps(): number
   currentFrame(): number
+  startFrame(): number
   durationFrames(): number
   setCurrentFrame(frame: number): void
   onFrame?(): void
@@ -19,7 +20,10 @@ export class PlaybackController {
 
   play(): void {
     if (this.playing) return
-    if (this.target.currentFrame() >= this.target.durationFrames() - 1) this.target.setCurrentFrame(0)
+    const start = this.target.startFrame()
+    const end = this.target.durationFrames()
+    if (end <= start) return
+    if (this.target.currentFrame() >= end - 1) this.target.setCurrentFrame(start)
     this.playing = true; this.lastTimestamp = performance.now(); this.remainder = 0; this.target.onPlayState?.(true)
     this.frameRequest = requestAnimationFrame(this.tick)
   }
@@ -39,8 +43,15 @@ export class PlaybackController {
     const wholeFrames = Math.floor(elapsedFrames)
     this.remainder = elapsedFrames - wholeFrames; this.lastTimestamp = timestamp
     if (wholeFrames > 0) {
+      const start = this.target.startFrame()
+      const end = this.target.durationFrames()
       const next = this.target.currentFrame() + wholeFrames
-      if (next >= this.target.durationFrames()) { this.target.setCurrentFrame(this.target.durationFrames() - 1); this.target.onFrame?.(); this.pause(); return }
+      if (next >= end) {
+        this.target.setCurrentFrame(Math.max(start, end - 1))
+        this.target.onFrame?.()
+        this.pause()
+        return
+      }
       this.target.setCurrentFrame(next); this.target.onFrame?.()
     }
     this.frameRequest = requestAnimationFrame(this.tick)

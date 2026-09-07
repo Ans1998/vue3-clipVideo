@@ -14,6 +14,7 @@ import { isClipInteractable } from '@/utils/timeline/tracks'
 import { groupResizePatches } from '@/utils/scene/groupResize'
 import { bindPreviewPlayback, setPreviewPlaying } from '@/services/playback/registry'
 import { CANVAS_PRESETS, fitCanvasZoom, matchingCanvasPreset, type CanvasPresetId } from '@/utils/scene/canvas'
+import { playbackContentRange } from '@/utils/timeline/exportRange'
 
 type Interaction =
   | { kind: 'drag'; ids: string[]; origin: Point; starts: Array<{ id: string; x: number; y: number }> }
@@ -22,6 +23,8 @@ type Interaction =
   | { kind: 'rotate'; id: string; startAngle: number; rotation: number }
   | { kind: 'marquee'; start: Point; current: Point }
 
+const props = withDefaults(defineProps<{ expanded?: boolean }>(), { expanded: false })
+const emit = defineEmits<{ toggleExpand: [] }>()
 const editor = useEditorStore()
 const canvas = ref<HTMLCanvasElement>()
 const stage = ref<HTMLElement>()
@@ -40,7 +43,8 @@ let stageObserver: ResizeObserver | undefined
 const playback = new PlaybackController({
   fps: () => editor.project.settings.fps,
   currentFrame: () => editor.project.currentFrame,
-  durationFrames: () => editor.project.settings.durationFrames,
+  startFrame: () => playbackContentRange(editor.project).startFrame,
+  durationFrames: () => playbackContentRange(editor.project).endFrame,
   setCurrentFrame: (frame) => editor.setCurrentFrame(frame),
   onFrame: () => { syncVideoFrames(); void audio.sync(editor.project, editor.project.currentFrame, true); queueDraw() },
   onPlayState: (playing) => { isPlaying.value = playing; setPreviewPlaying(playing); syncVideoFrames(); void audio.sync(editor.project, editor.project.currentFrame, playing) },
@@ -163,7 +167,14 @@ function togglePlayback(): void { playback.toggle() }
 function fitView(): void {
   const box = stage.value
   if (!box) return
-  const next = fitCanvasZoom(box.clientWidth, box.clientHeight, editor.project.settings.width, editor.project.settings.height)
+  const next = fitCanvasZoom(
+    box.clientWidth,
+    box.clientHeight,
+    editor.project.settings.width,
+    editor.project.settings.height,
+    props.expanded ? 48 : 80,
+    props.expanded ? 1.5 : 0.72,
+  )
   if (Math.abs(next - zoom.value) > 0.004) zoom.value = next
   autoFit.value = true
 }
@@ -176,7 +187,22 @@ function applyRatio(id: CanvasPresetId): void {
   autoFit.value = true
   void nextTick(fitView)
 }
-function onKeydown(event: KeyboardEvent): void { if (event.code !== 'Space' || (event.target as HTMLElement)?.matches('input, textarea')) return; event.preventDefault(); togglePlayback() }
+function onRatioChange(event: Event): void {
+  const id = (event.target as HTMLSelectElement).value
+  if (id === 'custom') return
+  applyRatio(id as CanvasPresetId)
+}
+function onKeydown(event: KeyboardEvent): void {
+  const typing = (event.target as HTMLElement)?.matches('input, textarea, select')
+  if (event.code === 'Escape' && props.expanded) {
+    event.preventDefault()
+    emit('toggleExpand')
+    return
+  }
+  if (event.code !== 'Space' || typing) return
+  event.preventDefault()
+  togglePlayback()
+}
 function resetMedia(): void {
   media.forEach((source) => { if (source instanceof HTMLVideoElement) { source.pause(); source.removeAttribute('src'); source.load() } })
   media.clear(); audio.dispose()
@@ -185,6 +211,7 @@ watch(() => editor.project.id, () => { resetMedia(); void loadActiveMedia() })
 watch(() => editor.project.materials.map((item) => `${item.id}:${item.objectUrl}:${item.missing}`).join('|'), () => { resetMedia(); void loadActiveMedia() })
 watch(() => [editor.project.currentFrame, editor.project.updatedAt, editor.selectedClipIds.join('|')], () => { void loadActiveMedia(); void audio.sync(editor.project, editor.project.currentFrame, isPlaying.value) })
 watch(() => [editor.project.settings.width, editor.project.settings.height], () => { if (autoFit.value) void nextTick(fitView) })
+watch(() => props.expanded, () => { autoFit.value = true; void nextTick(fitView) })
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
   unbindPlayback = bindPreviewPlayback(togglePlayback, () => playback.pause())
@@ -208,18 +235,32 @@ onBeforeUnmount(() => {
   <div class="preview-shell">
     <div class="preview-toolbar">
       <span>主视图</span>
-      <div class="preview-ratios">
-        <button v-for="item in CANVAS_PRESETS" :key="item.id" type="button" :class="{ active: activeRatio === item.id }" :title="`${item.label} · ${item.width}×${item.height}`" @click="applyRatio(item.id)">{{ item.label }}</button>
-      </div>
-      <small class="preview-size">{{ editor.project.settings.width }}×{{ editor.project.settings.height }}</small>
       <div>
+        <small class="preview-size">{{ editor.project.settings.width }}×{{ editor.project.settings.height }}</small>
         <button type="button" title="缩小" @click="nudgeZoom(-0.1)">−</button>
         <span>{{ Math.round(zoom * 100) }}%</span>
-        <button type="button" title="放大" @click="nudgeZoom(0.1)">＋</button>
+        <button type="button" title="放大画面" @click="nudgeZoom(0.1)">＋</button>
         <button type="button" title="适配窗口" @click="fitView">适配</button>
       </div>
     </div>
-    <div ref="stage" class="preview-stage"><div class="canvas-shell" :style="{ width: `${editor.project.settings.width * zoom}px`, height: `${editor.project.settings.height * zoom}px` }"><canvas ref="canvas" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="onDblclick" /><TransformControls v-if="groupTransform" :transform="groupTransform" :zoom="zoom" @handle-down="controlDown" /><TransformControls v-else-if="activeSelectedTransform" :transform="activeSelectedTransform" :zoom="zoom" @handle-down="controlDown" /><span v-if="marquee" class="marquee" :style="{ left: `${marquee.left}px`, top: `${marquee.top}px`, width: `${marquee.width}px`, height: `${marquee.height}px` }" /><span v-for="guide in guides" :key="`${guide.orientation}-${guide.position}`" :class="['alignment-guide', guide.orientation]" :style="guide.orientation === 'vertical' ? { left: `${guide.position * zoom}px` } : { top: `${guide.position * zoom}px` }" /></div></div>
-    <div class="preview-controls"><button type="button" @click="editor.setCurrentFrame(Math.max(0, editor.project.currentFrame - 1))">◀</button><button type="button" class="preview-play" @click="togglePlayback">{{ isPlaying ? '❚❚' : '▶' }}</button><button type="button" @click="editor.setCurrentFrame(Math.min(editor.project.settings.durationFrames - 1, editor.project.currentFrame + 1))">▶</button><span>{{ editor.project.currentFrame }}f · {{ editor.project.settings.fps }} FPS</span></div>
+    <div ref="stage" class="preview-stage"><div class="canvas-shell" :style="{ width: `${editor.project.settings.width * zoom}px`, height: `${editor.project.settings.height * zoom}px` }"><canvas ref="canvas" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="onDblclick" /><TransformControls v-if="groupTransform || activeSelectedTransform" :transform="(groupTransform ?? activeSelectedTransform)!" :zoom="zoom" :canvas-width="editor.project.settings.width" :canvas-height="editor.project.settings.height" @handle-down="controlDown" /><span v-if="marquee" class="marquee" :style="{ left: `${marquee.left}px`, top: `${marquee.top}px`, width: `${marquee.width}px`, height: `${marquee.height}px` }" /><span v-for="guide in guides" :key="`${guide.orientation}-${guide.position}`" :class="['alignment-guide', guide.orientation]" :style="guide.orientation === 'vertical' ? { left: `${guide.position * zoom}px` } : { top: `${guide.position * zoom}px` }" /></div></div>
+    <div class="preview-controls">
+      <div class="preview-transport">
+        <button type="button" @click="editor.setCurrentFrame(Math.max(0, editor.project.currentFrame - 1))">◀</button>
+        <button type="button" class="preview-play" @click="togglePlayback">{{ isPlaying ? '❚❚' : '▶' }}</button>
+        <button type="button" @click="editor.setCurrentFrame(Math.min(editor.project.settings.durationFrames - 1, editor.project.currentFrame + 1))">▶</button>
+        <span>{{ editor.project.currentFrame }}f · {{ editor.project.settings.fps }} FPS</span>
+      </div>
+      <div class="preview-view-tools">
+        <label class="preview-ratio">
+          <span>比例</span>
+          <select :value="activeRatio" :title="`${editor.project.settings.width}×${editor.project.settings.height}`" @change="onRatioChange">
+            <option v-for="item in CANVAS_PRESETS" :key="item.id" :value="item.id">{{ item.label }}</option>
+            <option v-if="activeRatio === 'custom'" value="custom">自定义</option>
+          </select>
+        </label>
+        <button type="button" class="preview-expand" :title="expanded ? '还原主视图' : '放大主视图'" @click="emit('toggleExpand')">{{ expanded ? '还原' : '放大' }}</button>
+      </div>
+    </div>
   </div>
 </template>

@@ -38,5 +38,6 @@ describe('canvas presets', () => {
     expect(fitCanvasZoom(800, 400, 1920, 1080)).toBeCloseTo((400 - 80) / 1080)
     expect(fitCanvasZoom(800, 400, 1080, 1920)).toBeCloseTo((400 - 80) / 1920)
     expect(fitCanvasZoom(1600, 900, 1920, 1080)).toBeLessThanOrEqual(0.72)
+    expect(fitCanvasZoom(1600, 900, 1920, 1080, 48, 1.5)).toBeGreaterThan(0.72)
   })
 })

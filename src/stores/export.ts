@@ -5,6 +5,7 @@ import { FFmpegExporter } from '@/services/export/FFmpegExporter'
 import { detectExportCapabilities } from '@/services/export/VideoExporter'
 import { WebCodecsExporter } from '@/services/export/WebCodecsExporter'
 import { WebVideoExporter } from '@/services/export/WebVideoExporter'
+import { canPickJianYingDirectory, pickJianYingDraftRoot } from '@/services/jianying/directory'
 import { JianYingExporter } from '@/services/jianying/JianYingExporter'
 import { isAbortError, TaskRunner, type TaskSnapshot } from '@/services/task/TaskProgress'
 import { cloneProject } from '@/services/project/factory'
@@ -63,29 +64,48 @@ export const useExportStore = defineStore('export', () => {
     }
   }
 
-  async function startJianYing(): Promise<void> {
-    view.value = 'progress'
+  async function startJianYing(mode: 'zip' | 'directory' = 'zip'): Promise<void> {
     error.value = ''
     result.value = null
+    let directory: FileSystemDirectoryHandle | undefined
+    if (mode === 'directory') {
+      try {
+        directory = await pickJianYingDraftRoot()
+      } catch (reason) {
+        if (reason instanceof DOMException && reason.name === 'AbortError') return
+        error.value = reason instanceof Error ? reason.message : '无法打开剪映草稿目录'
+        return
+      }
+    }
+    view.value = 'progress'
     try {
+      let warnings: string[] = []
+      let savedToDirectory = false
+      let folderName = sanitizeFileName(editor.project.name)
       const blob = await jianyingRunner.run(editor.project.name, Math.max(1, editor.project.materials.length), async (ctx) => {
-        return jianying.export(cloneProject(editor.project), {
+        const exported = await jianying.export(cloneProject(editor.project), {
           signal: ctx.signal,
+          directory,
           onProgress: (item) => ctx.report({ current: item.currentFrame, total: item.totalFrames, message: item.message }),
         })
+        warnings = exported.warnings
+        savedToDirectory = exported.savedToDirectory
+        folderName = exported.folderName
+        return exported.blob
       })
       progress.value = { ...jianyingRunner.snapshot }
       result.value = {
         blob,
-        fileName: `${sanitizeFileName(editor.project.name)}.zip`,
-        mimeType: 'application/zip',
+        fileName: savedToDirectory ? folderName : `${folderName}.zip`,
+        mimeType: savedToDirectory ? 'text/plain' : 'application/zip',
         durationFrames: editor.project.settings.durationFrames,
         width: editor.project.settings.width,
         height: editor.project.settings.height,
         fps: editor.project.settings.fps,
         format: 'webm',
         exporterId: 'jianying',
-        warnings: ['剪映草稿为版本化映射结果，请用目标剪映版本打开并核对素材路径'],
+        warnings,
+        savedToDirectory,
       }
       view.value = 'result'
     } catch (reason) {
@@ -121,5 +141,5 @@ export const useExportStore = defineStore('export', () => {
     return sanitizeFileName(editor.project.name)
   }
 
-  return { capabilities, dialogOpen, jianyingOpen, view, progress, result, error, busy, open, openJianYing, close, start, startJianYing, cancel, retry, download, defaultFileName }
+  return { capabilities, canPickJianYingDirectory, dialogOpen, jianyingOpen, view, progress, result, error, busy, open, openJianYing, close, start, startJianYing, cancel, retry, download, defaultFileName }
 })
