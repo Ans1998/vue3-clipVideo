@@ -6,13 +6,15 @@ import { materialStorage } from '@/services/storage/IndexedDBService'
 import { projectStorage } from '@/services/storage/ProjectStorage'
 import { captureProjectThumbnail } from '@/services/project/ThumbnailService'
 import { cloneProject, cloneData, createEmptyProject, normalizeProject, serializeProject } from '@/services/project/factory'
-import { DEFAULT_AUDIO, DEFAULT_TRANSFORM, createDefaultText, type ClipType, type EditorProject, type Material, type ProjectSettings, type TextConfig, type TimelineClip, type TimelineTrack, type TrackType, type Transform } from '@/types/editor'
+import { clampClipTiming, clampDurationFrames, contentEndFrame, ensureDurationFrames, rescaleProjectFps, sourceLength, trimLeftTo, trimRightTo } from '@/utils/timeline/timing'
+import { clipSpeed, durationForSpeed, resolvedTransition } from '@/utils/timeline/clipPlayback'
+import { rippleRemove, rippleShift } from '@/utils/timeline/ripple'
+import { DEFAULT_AUDIO, DEFAULT_FILTER, DEFAULT_TRANSFORM, DEFAULT_TRANSITION, createDefaultText, type ClipFilter, type ClipTransitionKind, type ClipType, type EditorProject, type Material, type ProjectSettings, type TextConfig, type TimelineClip, type TimelineTrack, type TrackType, type Transform } from '@/types/editor'
 import type { ProjectSummary, StorageQuota } from '@/types/project'
 import { alignedPositions, type AlignMode } from '@/utils/scene/align'
 import { applyCanvasSize, CANVAS_PRESETS, type CanvasPresetId } from '@/utils/scene/canvas'
 import { inspectMediaFile, isLargeMediaFile, materialTypeOf } from '@/utils/media/metadata'
 import { canDetachAudio, canRemoveTrack, createTrack, isClipInteractable, movingClips, sortedTracks, trackAccepts, trackWouldOverlap, type TrackDropHint } from '@/utils/timeline/tracks'
-import { clampClipTiming, clampDurationFrames, contentEndFrame, ensureDurationFrames, rescaleProjectFps } from '@/utils/timeline/timing'
 import { useNotifyStore } from '@/stores/notify'
 
 export const useEditorStore = defineStore('editor', () => {
@@ -22,6 +24,7 @@ export const useEditorStore = defineStore('editor', () => {
   const trashSummaries = ref<ProjectSummary[]>([])
   const quota = ref<StorageQuota>({ usage: 0, quota: 0 })
   const selectedClipIds = ref<string[]>([])
+  const selectedTrackId = ref('')
   const pixelsPerFrame = ref(4)
   const past = ref<string[]>([])
   const future = ref<string[]>([])
@@ -53,11 +56,28 @@ export const useEditorStore = defineStore('editor', () => {
     }
   }
 
-  function snapshot(): string { return JSON.stringify(project.value) }
+  function snapshot(): string { return JSON.stringify(serializeProject(project.value)) }
+  function restoreSnapshot(serialized: string): void {
+    revokeMaterialUrls(project.value)
+    project.value = normalizeProject(JSON.parse(serialized) as EditorProject)
+    selectedClipIds.value = []
+    selectedTrackId.value = ''
+    void hydrateMaterialUrls()
+  }
   function commit(): void { past.value.push(snapshot()); if (past.value.length > 100) past.value.shift(); future.value = [] }
   function touch(): void { project.value.updatedAt = Date.now() }
-  function selectClip(id: string, additive = false): void { selectedClipIds.value = !id ? [] : additive ? [...new Set([...selectedClipIds.value, id])] : [id] }
-  function selectClips(ids: string[], additive = false): void { selectedClipIds.value = additive ? [...new Set([...selectedClipIds.value, ...ids])] : ids }
+  function selectTrack(id: string): void { selectedTrackId.value = id }
+  function selectClip(id: string, additive = false): void {
+    selectedClipIds.value = !id ? [] : additive ? [...new Set([...selectedClipIds.value, id])] : [id]
+    const clip = id ? project.value.clips.find((item) => item.id === id) : undefined
+    if (clip) selectedTrackId.value = clip.trackId
+  }
+  function selectClips(ids: string[], additive = false): void {
+    selectedClipIds.value = additive ? [...new Set([...selectedClipIds.value, ...ids])] : ids
+    const last = ids.at(-1)
+    const clip = last ? project.value.clips.find((item) => item.id === last) : undefined
+    if (clip) selectedTrackId.value = clip.trackId
+  }
   function setCurrentFrame(frame: number): void { project.value.currentFrame = Math.min(project.value.settings.durationFrames - 1, Math.max(0, Math.round(frame))) }
   function materialTrack(type: ClipType): TimelineTrack { return project.value.tracks.find((track) => trackAccepts(track, type)) ?? project.value.tracks[0] }
 
@@ -69,6 +89,7 @@ export const useEditorStore = defineStore('editor', () => {
     revokeMaterialUrls(project.value)
     project.value = normalizeProject(next)
     selectedClipIds.value = []
+    selectedTrackId.value = ''
     past.value = []
     future.value = []
     clipboard.value = []
@@ -200,9 +221,10 @@ export const useEditorStore = defineStore('editor', () => {
     await trashProject(id)
   }
 
-  async function addMaterial(file: File): Promise<void> {
+  async function addMaterial(file: File): Promise<Material> {
     const meta = await inspectMediaFile(file, project.value.settings.fps)
     if (isLargeMediaFile(file)) notify.push('warn', `「${file.name}」体积较大，预览和导出会占用较多内存`)
+    commit()
     const material: Material = {
       id: nanoid(),
       type: meta.type,
@@ -218,6 +240,7 @@ export const useEditorStore = defineStore('editor', () => {
     project.value.materials.push(material); touch(); await materialStorage.save(material, file, project.value.id)
     quota.value = await projectStorage.quota()
     if (quota.value.quota && quota.value.usage / quota.value.quota > 0.85) notify.push('warn', '本地存储即将用尽，建议清理回收站或素材')
+    return material
   }
 
   async function removeMaterial(id: string): Promise<void> {
@@ -230,7 +253,6 @@ export const useEditorStore = defineStore('editor', () => {
     if (material.objectUrl) URL.revokeObjectURL(material.objectUrl)
     project.value.materials = project.value.materials.filter((item) => item.id !== id)
     touch()
-    await materialStorage.deleteMany([id])
     quota.value = await projectStorage.quota()
     notify.push(used ? 'info' : 'success', used ? `已删除「${material.name}」及其 ${used} 个时间轴片段` : `已删除素材「${material.name}」`)
   }
@@ -240,6 +262,7 @@ export const useEditorStore = defineStore('editor', () => {
     if (!material) return
     const type = materialTypeOf(file)
     if (type !== material.type) throw new Error(`请选择${material.type === 'video' ? '视频' : material.type === 'audio' ? '音频' : '图片'}文件`)
+    commit()
     const meta = await inspectMediaFile(file, project.value.settings.fps)
     if (material.objectUrl) URL.revokeObjectURL(material.objectUrl)
     material.name = file.name
@@ -328,10 +351,15 @@ export const useEditorStore = defineStore('editor', () => {
     try {
       commit()
       const track = placeOnTrack(material.type, startFrame, duration, targetTrackId, spawnTrack, afterOrder)
-      if (track.locked) { notify.push('warn', '轨道已锁定'); return }
-      const clip: TimelineClip = { id: nanoid(), trackId: track.id, type: material.type, materialId: material.id, startFrame, durationFrames: duration, offsetFrame: 0, name: material.name, zIndex: project.value.clips.length, locked: false, transform: canvasTransform(material.width ?? Math.round(project.value.settings.width / 2), material.height ?? Math.round(project.value.settings.height / 2)), audio: material.type === 'image' ? undefined : { ...DEFAULT_AUDIO } }
+      if (track.locked) {
+        past.value.pop()
+        notify.push('warn', '轨道已锁定')
+        return
+      }
+      const clip: TimelineClip = { id: nanoid(), trackId: track.id, type: material.type, materialId: material.id, startFrame, durationFrames: duration, offsetFrame: 0, name: material.name, zIndex: project.value.clips.length, locked: false, speed: 1, fadeInFrames: 0, fadeOutFrames: 0, transitionIn: { ...DEFAULT_TRANSITION }, transitionOut: { ...DEFAULT_TRANSITION }, filter: { ...DEFAULT_FILTER }, transform: canvasTransform(material.width ?? Math.round(project.value.settings.width / 2), material.height ?? Math.round(project.value.settings.height / 2)), audio: material.type === 'image' ? undefined : { ...DEFAULT_AUDIO } }
       project.value.clips.push(clip); selectClip(clip.id); growTimeline(); touch()
     } catch (reason) {
+      past.value.pop()
       notify.push('warn', reason instanceof Error ? reason.message : '无法添加到时间轴')
     }
   }
@@ -341,7 +369,7 @@ export const useEditorStore = defineStore('editor', () => {
     const duration = project.value.settings.fps * 5
     const track = placeOnTrack('text', project.value.currentFrame, duration)
     const text: TextConfig = createDefaultText()
-    const clip: TimelineClip = { id: nanoid(), trackId: track.id, type: 'text', startFrame: project.value.currentFrame, durationFrames: duration, offsetFrame: 0, name: text.content, zIndex: project.value.clips.length, locked: false, transform: canvasTransform(700, 150), text }
+    const clip: TimelineClip = { id: nanoid(), trackId: track.id, type: 'text', startFrame: project.value.currentFrame, durationFrames: duration, offsetFrame: 0, name: text.content, zIndex: project.value.clips.length, locked: false, speed: 1, fadeInFrames: 0, fadeOutFrames: 0, transitionIn: { ...DEFAULT_TRANSITION }, transitionOut: { ...DEFAULT_TRANSITION }, filter: { ...DEFAULT_FILTER }, transform: canvasTransform(700, 150), text }
     project.value.clips.push(clip); selectClip(clip.id); growTimeline(); touch()
   }
 
@@ -409,6 +437,61 @@ export const useEditorStore = defineStore('editor', () => {
     notify.push('success', `画布已切换为 ${preset.label} · ${preset.width}×${preset.height}`)
     return true
   }
+  function updateClipSpeed(id: string, speed: number): void {
+    const clip = project.value.clips.find((item) => item.id === id)
+    if (!clip || !isClipInteractable(project.value, id) || clip.type === 'text' || clip.type === 'image') return
+    commit()
+    const used = clip.durationFrames * clipSpeed(clip)
+    clip.speed = clipSpeed({ speed })
+    Object.assign(clip, clampClipTiming(project.value, clip, { durationFrames: durationForSpeed(used, clip.speed) }))
+    growTimeline()
+    touch()
+  }
+  function updateClipFade(id: string, patch: Partial<Pick<TimelineClip, 'fadeInFrames' | 'fadeOutFrames'>>): void {
+    const clip = project.value.clips.find((item) => item.id === id)
+    if (!clip || !isClipInteractable(project.value, id)) return
+    commit()
+    if (patch.fadeInFrames != null) {
+      clip.fadeInFrames = Math.max(0, Math.round(patch.fadeInFrames))
+      clip.transitionIn = clip.fadeInFrames > 0 ? { kind: 'fade', durationFrames: clip.fadeInFrames } : { ...DEFAULT_TRANSITION }
+    }
+    if (patch.fadeOutFrames != null) {
+      clip.fadeOutFrames = Math.max(0, Math.round(patch.fadeOutFrames))
+      clip.transitionOut = clip.fadeOutFrames > 0 ? { kind: 'fade', durationFrames: clip.fadeOutFrames } : { ...DEFAULT_TRANSITION }
+    }
+    touch()
+  }
+  function updateClipTransition(id: string, side: 'in' | 'out', patch: { kind?: ClipTransitionKind; durationFrames?: number }): void {
+    const clip = project.value.clips.find((item) => item.id === id)
+    if (!clip || !isClipInteractable(project.value, id) || clip.type === 'audio') return
+    commit()
+    const current = side === 'in' ? clip.transitionIn : clip.transitionOut
+    const resolved = resolvedTransition(clip, side)
+    const kind = patch.kind ?? resolved.kind
+    const fallback = kind === 'none' ? DEFAULT_TRANSITION.durationFrames : Math.max(1, current?.durationFrames || resolved.durationFrames || Math.round(project.value.settings.fps * 0.4))
+    const durationFrames = Math.max(0, Math.min(clip.durationFrames, Math.round(patch.durationFrames ?? fallback)))
+    const next = { kind, durationFrames: kind === 'none' ? Math.max(1, durationFrames || DEFAULT_TRANSITION.durationFrames) : Math.max(1, durationFrames) }
+    if (side === 'in') {
+      clip.transitionIn = next
+      clip.fadeInFrames = kind === 'fade' ? next.durationFrames : 0
+    } else {
+      clip.transitionOut = next
+      clip.fadeOutFrames = kind === 'fade' ? next.durationFrames : 0
+    }
+    touch()
+  }
+  function updateClipFilter(id: string, patch: Partial<ClipFilter>): void {
+    const clip = project.value.clips.find((item) => item.id === id)
+    if (!clip || !isClipInteractable(project.value, id)) return
+    commit()
+    clip.filter = { ...DEFAULT_FILTER, ...clip.filter, ...patch }
+    touch()
+  }
+  function toggleRippleEdit(): void {
+    commit()
+    project.value.settings.rippleEdit = !(project.value.settings.rippleEdit ?? true)
+    touch()
+  }
   function updateAudio(id: string, patch: Partial<NonNullable<TimelineClip['audio']>>): void {
     const clip = project.value.clips.find((item) => item.id === id)
     if (!clip || !isClipInteractable(project.value, id)) return
@@ -422,11 +505,33 @@ export const useEditorStore = defineStore('editor', () => {
     commit()
     alignedPositions(clips, mode).forEach((point, id) => updateTransform(id, point))
   }
-  function removeSelected(): void { if (!selectedClipIds.value.length) return; commit(); project.value.clips = project.value.clips.filter((clip) => !selectedClipIds.value.includes(clip.id)); selectedClipIds.value = []; touch() }
+  function removableSelected(): TimelineClip[] {
+    return selectedClips().filter((clip) => isClipInteractable(project.value, clip.id))
+  }
+  function removeSelected(): void {
+    const clips = removableSelected()
+    if (!clips.length) {
+      if (selectedClipIds.value.length) notify.push('warn', '锁定的片段不能删除')
+      return
+    }
+    commit()
+    if (project.value.settings.rippleEdit !== false) rippleRemove(project.value, clips)
+    else {
+      const ids = new Set(clips.map((clip) => clip.id))
+      project.value.clips = project.value.clips.filter((clip) => !ids.has(clip.id))
+    }
+    const ids = new Set(clips.map((clip) => clip.id))
+    selectedClipIds.value = selectedClipIds.value.filter((id) => !ids.has(id))
+    touch()
+  }
   function toggleLock(id: string): void { const clip = project.value.clips.find((item) => item.id === id); if (!clip) return; commit(); clip.locked = !clip.locked; touch() }
   function moveSelectedLayer(direction: 'front' | 'back' | 'forward' | 'backward'): void {
-    if (!selectedClipIds.value.length) return
-    commit(); const selected = new Set(selectedClipIds.value); const ordered = [...project.value.clips].sort((a, b) => a.zIndex - b.zIndex)
+    const movable = selectedClipIds.value.filter((id) => isClipInteractable(project.value, id))
+    if (!movable.length) {
+      if (selectedClipIds.value.length) notify.push('warn', '锁定的片段不能调整图层')
+      return
+    }
+    commit(); const selected = new Set(movable); const ordered = [...project.value.clips].sort((a, b) => a.zIndex - b.zIndex)
     if (direction === 'front') ordered.sort((a, b) => Number(selected.has(a.id)) - Number(selected.has(b.id)))
     if (direction === 'back') ordered.sort((a, b) => Number(selected.has(b.id)) - Number(selected.has(a.id)))
     if (direction === 'forward') for (let index = ordered.length - 2; index >= 0; index -= 1) if (selected.has(ordered[index].id) && !selected.has(ordered[index + 1].id)) [ordered[index], ordered[index + 1]] = [ordered[index + 1], ordered[index]]
@@ -444,23 +549,37 @@ export const useEditorStore = defineStore('editor', () => {
     notify.push('success', clips.length === 1 ? `已复制「${clips[0].name}」` : `已复制 ${clips.length} 个片段`)
     return true
   }
-  function resolvePasteTrack(clip: TimelineClip, startFrame: number, preferredTrackId?: string): TimelineTrack {
+  function resolvePasteTrack(clip: TimelineClip, ranges: Array<{ startFrame: number; durationFrames: number }>, preferredTrackId?: string): TimelineTrack {
     const preferred = preferredTrackId ? project.value.tracks.find((track) => track.id === preferredTrackId) : undefined
-    const sameType = preferred && trackAccepts(preferred, clip.type) ? preferred.id : project.value.tracks.some((track) => track.id === clip.trackId) ? clip.trackId : undefined
-    try {
-      return placeOnTrack(clip.type, startFrame, clip.durationFrames, sameType)
-    } catch {
-      return placeOnTrack(clip.type, startFrame, clip.durationFrames, 'new', true)
-    }
+    const original = project.value.tracks.find((track) => track.id === clip.trackId)
+    const candidate = preferred && trackAccepts(preferred, clip.type) ? preferred : original && trackAccepts(original, clip.type) ? original : undefined
+    if (candidate && !candidate.locked && !trackWouldOverlap(project.value, candidate.id, ranges)) return candidate
+    const fit = sortedTracks(project.value).find((track) => trackAccepts(track, clip.type) && !track.locked && !trackWouldOverlap(project.value, track.id, ranges))
+    if (fit) return fit
+    return createTrack(project.value, clip.type)
   }
   function pasteAtFrame(frame = project.value.currentFrame, trackId?: string): boolean {
     if (!clipboard.value.length) { notify.push('warn', '剪贴板为空，请先复制片段'); return false }
     commit()
     const earliest = Math.min(...clipboard.value.map((clip) => clip.startFrame))
+    const groups = new Map<string, TimelineClip[]>()
+    clipboard.value.forEach((clip) => {
+      const list = groups.get(clip.trackId) ?? []
+      list.push(clip)
+      groups.set(clip.trackId, list)
+    })
+    const trackMap = new Map<string, string>()
+    groups.forEach((group, originalTrackId) => {
+      const ranges = group.map((clip) => ({ startFrame: Math.max(0, frame + clip.startFrame - earliest), durationFrames: clip.durationFrames }))
+      const preferred = trackId && group.some((clip) => {
+        const track = project.value.tracks.find((item) => item.id === trackId)
+        return track ? trackAccepts(track, clip.type) : false
+      }) ? trackId : undefined
+      trackMap.set(originalTrackId, resolvePasteTrack(group[0], ranges, preferred).id)
+    })
     const created = clipboard.value.map((clip, index) => {
       const startFrame = Math.max(0, frame + clip.startFrame - earliest)
-      const track = resolvePasteTrack(clip, startFrame, trackId)
-      return { ...cloneData(clip), id: nanoid(), startFrame, trackId: track.id, zIndex: project.value.clips.length + index, locked: false }
+      return { ...cloneData(clip), id: nanoid(), startFrame, trackId: trackMap.get(clip.trackId) ?? clip.trackId, zIndex: project.value.clips.length + index, locked: false }
     })
     project.value.clips.push(...created)
     selectedClipIds.value = created.map((clip) => clip.id)
@@ -473,12 +592,18 @@ export const useEditorStore = defineStore('editor', () => {
     return pasteAtFrame(project.value.currentFrame)
   }
   function cutSelected(): boolean {
-    const clips = selectedClips()
-    if (!clips.length) { notify.push('warn', '请先选择要剪切的片段'); return false }
+    const clips = removableSelected()
+    if (!clips.length) {
+      notify.push('warn', selectedClipIds.value.length ? '锁定的片段不能剪切' : '请先选择要剪切的片段')
+      return false
+    }
     commit()
     clipboard.value = clips.map((clip) => cloneData(clip))
-    const ids = new Set(clips.map((clip) => clip.id))
-    project.value.clips = project.value.clips.filter((clip) => !ids.has(clip.id))
+    if (project.value.settings.rippleEdit !== false) rippleRemove(project.value, clips)
+    else {
+      const ids = new Set(clips.map((clip) => clip.id))
+      project.value.clips = project.value.clips.filter((clip) => !ids.has(clip.id))
+    }
     selectedClipIds.value = []
     touch()
     notify.push('info', clips.length === 1 ? `已剪切「${clips[0].name}」` : `已剪切 ${clips.length} 个片段`)
@@ -487,10 +612,24 @@ export const useEditorStore = defineStore('editor', () => {
   function duplicateSelected(): boolean {
     const clips = selectedClips()
     if (!clips.length) { notify.push('warn', '请先选择要复制的片段'); return false }
+    const previous = clipboard.value
     clipboard.value = clips.map((clip) => cloneData(clip))
     const end = Math.max(...clips.map((clip) => clip.startFrame + clip.durationFrames))
-    return pasteAtFrame(end)
+    const ok = pasteAtFrame(end)
+    clipboard.value = previous
+    return ok
   }
+  function clipsAtPlayhead(): TimelineClip[] {
+    const frame = project.value.currentFrame
+    const onClip = (clip: TimelineClip) => (
+      isClipInteractable(project.value, clip.id)
+      && frame > clip.startFrame
+      && frame < clip.startFrame + clip.durationFrames
+    )
+    const selected = selectedClips().filter(onClip)
+    return selected.length ? selected : project.value.clips.filter(onClip)
+  }
+  const canSplitAtPlayhead = computed(() => clipsAtPlayhead().length > 0)
   function splitClipAudio(clipId?: string): boolean {
     const id = clipId ?? selectedClipIds.value.at(-1)
     const clip = id ? project.value.clips.find((item) => item.id === id) : undefined
@@ -513,8 +652,11 @@ export const useEditorStore = defineStore('editor', () => {
       name: `「${clip.name}」音频`,
       zIndex: project.value.clips.length,
       locked: false,
+      speed: clip.speed ?? 1,
+      fadeInFrames: 0,
+      fadeOutFrames: 0,
       transform: { ...DEFAULT_TRANSFORM },
-      audio: { volume, muted: false },
+      audio: { volume, muted: false, fadeInFrames: clip.audio?.fadeInFrames ?? 0, fadeOutFrames: clip.audio?.fadeOutFrames ?? 0 },
     }
     project.value.clips.push(audioClip)
     selectClip(audioClip.id)
@@ -523,8 +665,78 @@ export const useEditorStore = defineStore('editor', () => {
     notify.push('success', `已分离「${clip.name}」的音频`)
     return true
   }
-  function undo(): void { const previous = past.value.pop(); if (!previous) return; future.value.push(snapshot()); project.value = normalizeProject(JSON.parse(previous) as EditorProject); selectedClipIds.value = [] }
-  function redo(): void { const next = future.value.pop(); if (!next) return; past.value.push(snapshot()); project.value = normalizeProject(JSON.parse(next) as EditorProject); selectedClipIds.value = [] }
+  function splitSelectedAtPlayhead(): boolean {
+    const frame = project.value.currentFrame
+    const targets = clipsAtPlayhead().filter((clip) => {
+      const source = sourceLength(project.value, clip)
+      const rightOffset = clip.offsetFrame + (frame - clip.startFrame) * clipSpeed(clip)
+      return source == null || rightOffset < source
+    })
+    if (!targets.length) {
+      notify.push('warn', '请把播放头放在未锁定片段的中间再分割')
+      return false
+    }
+    commit()
+    const created: string[] = []
+    targets.forEach((clip) => {
+      const leftDuration = frame - clip.startFrame
+      const rightDuration = clip.durationFrames - leftDuration
+      const rightOffset = clip.offsetFrame + leftDuration * clipSpeed(clip)
+      clip.durationFrames = leftDuration
+      project.value.clips.push({
+        ...cloneData(clip),
+        id: nanoid(),
+        startFrame: frame,
+        durationFrames: rightDuration,
+        offsetFrame: clip.type === 'video' || clip.type === 'audio' ? rightOffset : 0,
+        zIndex: project.value.clips.length,
+        locked: false,
+      })
+      created.push(project.value.clips.at(-1)!.id)
+    })
+    selectedClipIds.value = created
+    growTimeline()
+    touch()
+    notify.push('success', created.length === 1 ? '已在播放头处分割' : `已分割 ${created.length} 个片段`)
+    return true
+  }
+  function splitSelectedSide(side: 'left' | 'right'): boolean {
+    try {
+      const frame = project.value.currentFrame
+      const targets = clipsAtPlayhead()
+      if (!targets.length) {
+        notify.push('warn', '请把播放头放在片段中间，再点左分割 [ 或右分割 ]')
+        return false
+      }
+      commit()
+      const ripple = project.value.settings.rippleEdit !== false
+      targets.forEach((clip) => {
+        if (side === 'left') {
+          const oldStart = clip.startFrame
+          Object.assign(clip, trimLeftTo(project.value, clip, frame))
+          const removed = clip.startFrame - oldStart
+          if (ripple && removed > 0) rippleShift(project.value, clip.trackId, clip.startFrame, -removed)
+          return
+        }
+        const oldEnd = clip.startFrame + clip.durationFrames
+        Object.assign(clip, trimRightTo(project.value, clip, frame))
+        const removed = oldEnd - (clip.startFrame + clip.durationFrames)
+        if (ripple && removed > 0) rippleShift(project.value, clip.trackId, clip.startFrame + clip.durationFrames, -removed, [clip.id])
+      })
+      touch()
+      notify.push('success', targets.length === 1
+        ? (side === 'left' ? '已去掉播放头左侧' : '已去掉播放头右侧')
+        : (side === 'left' ? `已去掉 ${targets.length} 个片段的左侧` : `已去掉 ${targets.length} 个片段的右侧`))
+      return true
+    } catch (reason) {
+      notify.push('error', reason instanceof Error ? reason.message : '分割失败')
+      return false
+    }
+  }
+  function splitSelectedLeft(): boolean { return splitSelectedSide('left') }
+  function splitSelectedRight(): boolean { return splitSelectedSide('right') }
+  function undo(): void { const previous = past.value.pop(); if (!previous) return; future.value.push(snapshot()); restoreSnapshot(previous) }
+  function redo(): void { const next = future.value.pop(); if (!next) return; past.value.push(snapshot()); restoreSnapshot(next) }
 
   const persist = useDebounceFn(async (value: EditorProject) => {
     if (!ready.value) return
@@ -535,9 +747,9 @@ export const useEditorStore = defineStore('editor', () => {
 
   watch(project, (value) => { persist(value); persistThumbnail() }, { deep: true })
   return {
-    project, ready, summaries, trashSummaries, quota, recentProjects, missingMaterials, orderedTracks, contentFrames, selectedClipIds, pixelsPerFrame, activeClips, selectedClip, dragMaterialId, hasClipboard,
+    project, ready, summaries, trashSummaries, quota, recentProjects, missingMaterials, orderedTracks, contentFrames, selectedClipIds, selectedTrackId, pixelsPerFrame, activeClips, selectedClip, dragMaterialId, hasClipboard, canSplitAtPlayhead,
     initialize, newProject, openProject, deleteProject, trashProject, restoreProject, purgeProject, renameProject, refreshSummaries,
-    addMaterial, removeMaterial, relinkMaterial, addClip, addText, addTrack, toggleTrackLock, toggleTrackHidden, toggleTrackMuted, removeTrack, applyTrackDrop, selectClip, selectClips, setCurrentFrame, updateTransform, updateText, updateClipTiming, updateClipName, updateSettings, applyCanvasPreset, updateAudio, alignSelected,
-    removeSelected, toggleLock, moveSelectedLayer, selectAllClips, copySelected, cutSelected, pasteAtFrame, pasteAtCurrentFrame, duplicateSelected, splitClipAudio, undo, redo, commit, hydrateMaterialUrls,
+    addMaterial, removeMaterial, relinkMaterial, addClip, addText, addTrack, toggleTrackLock, toggleTrackHidden, toggleTrackMuted, removeTrack, applyTrackDrop, selectClip, selectClips, selectTrack, setCurrentFrame, updateTransform, updateText, updateClipTiming, updateClipName, updateSettings, applyCanvasPreset, updateAudio, updateClipSpeed, updateClipFade, updateClipTransition, updateClipFilter, toggleRippleEdit, alignSelected,
+    removeSelected, toggleLock, moveSelectedLayer, selectAllClips, copySelected, cutSelected, pasteAtFrame, pasteAtCurrentFrame, duplicateSelected, splitClipAudio, splitSelectedAtPlayhead, splitSelectedLeft, splitSelectedRight, undo, redo, commit, hydrateMaterialUrls,
   }
 })

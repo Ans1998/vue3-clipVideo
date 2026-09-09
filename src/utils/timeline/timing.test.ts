@@ -6,6 +6,7 @@ import {
   clampDurationFrames,
   contentEndFrame,
   ensureDurationFrames,
+  fitRangeOnTrack,
   limitedMoveDelta,
   rescaleProjectFps,
   sourceLength,
@@ -60,6 +61,15 @@ describe('clip timing', () => {
     expect(right.durationFrames).toBe(300)
   })
 
+  it('shortens timeline duration when clip speed is greater than 1', () => {
+    const project = createEmptyProject()
+    project.materials.push({ id: 'mat-v', type: 'video', name: 'a.mp4', mimeType: 'video/mp4', size: 1, durationFrames: 200 })
+    const clip = videoClip({ speed: 2, offsetFrame: 10, durationFrames: 50 })
+    expect(trimLeftTo(project, clip, 80)).toEqual({ startFrame: 95, durationFrames: 55, offsetFrame: 0 })
+    expect(trimRightTo(project, clip, 400).durationFrames).toBe(95)
+    expect(clampClipTiming(project, clip, { durationFrames: 200 }).durationFrames).toBe(95)
+  })
+
   it('clamps duration and offset to remaining source media', () => {
     const project = createEmptyProject()
     project.materials.push({ id: 'mat-v', type: 'video', name: 'a.mp4', mimeType: 'video/mp4', size: 1, durationFrames: 80 })
@@ -100,5 +110,22 @@ describe('clip timing', () => {
     expect(project.clips[0].durationFrames).toBe(60)
     expect(project.clips[0].offsetFrame).toBe(30)
     expect(project.materials[0].durationFrames).toBe(600)
+  })
+
+  it('stops trim and inspector edits from overlapping another clip on the same track', () => {
+    const project = createEmptyProject()
+    project.clips.push(
+      videoClip({ id: 'a', startFrame: 0, durationFrames: 40, offsetFrame: 0 }),
+      videoClip({ id: 'b', startFrame: 80, durationFrames: 40, offsetFrame: 0 }),
+    )
+    const right = project.clips[1]
+    expect(fitRangeOnTrack(project, 'a', 'video-1', 0, 90)).toEqual({ startFrame: 0, durationFrames: 80 })
+    expect(trimRightTo(project, project.clips[0], 200).durationFrames).toBe(80)
+    expect(trimLeftTo(project, right, 20)).toEqual({ startFrame: 40, durationFrames: 80, offsetFrame: 0 })
+    expect(clampClipTiming(project, right, { startFrame: 20, durationFrames: 100 })).toEqual({
+      startFrame: 40,
+      durationFrames: 100,
+      offsetFrame: 0,
+    })
   })
 })

@@ -3,18 +3,25 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import TransformControls from '@/components/preview/TransformControls.vue'
 import { PlaybackController } from '@/services/playback/PlaybackController'
 import { PreviewAudioMixer } from '@/services/playback/PreviewAudio'
+import { bindPreviewPlayback, setPreviewPlaying } from '@/services/playback/registry'
 import { CanvasSceneRenderer, resolveActiveClips, sourceFrame, type SceneSource } from '@/services/renderer/SceneRenderer'
+import { mediaCacheKey } from '@/services/renderer/MaterialAssetLoader'
 import { useEditorStore } from '@/stores/editor'
 import type { TimelineClip, Transform } from '@/types/editor'
 import { angleBetween, normalizeDegrees, rotatePoint, type Point } from '@/utils/scene/geometry'
-import { snapTransform, type AlignmentGuide } from '@/utils/scene/snapping'
+import { snappedGroupDelta, type AlignmentGuide } from '@/utils/scene/snapping'
 import { boundsToTransform, clipAabb, normalizeRect, rectsIntersect, selectionBounds } from '@/utils/scene/bounds'
 import { seekMediaToFrame } from '@/utils/media/seek'
+import { clipSpeed } from '@/utils/timeline/clipPlayback'
 import { isClipInteractable } from '@/utils/timeline/tracks'
 import { groupResizePatches } from '@/utils/scene/groupResize'
-import { bindPreviewPlayback, setPreviewPlaying } from '@/services/playback/registry'
+import { isTypingTarget } from '@/utils/dom'
+import { selectionOverlayFrame } from '@/utils/scene/selectionOverlay'
 import { CANVAS_PRESETS, fitCanvasZoom, matchingCanvasPreset, type CanvasPresetId } from '@/utils/scene/canvas'
 import { playbackContentRange } from '@/utils/timeline/exportRange'
+import { frameToTimecode } from '@/utils/timeline/timecode'
+import UiIcon from '@/components/layout/UiIcon.vue'
+import UiTooltip from '@/components/layout/UiTooltip.vue'
 
 type Interaction =
   | { kind: 'drag'; ids: string[]; origin: Point; starts: Array<{ id: string; x: number; y: number }> }
@@ -34,6 +41,7 @@ const isPlaying = ref(false)
 const media = new Map<string, SceneSource>()
 const guides = ref<AlignmentGuide[]>([])
 const marquee = ref<{ left: number; top: number; width: number; height: number } | null>(null)
+const textEdit = ref<{ id: string; value: string } | null>(null)
 const renderer = new CanvasSceneRenderer()
 const audio = new PreviewAudioMixer()
 let animation = 0
@@ -56,30 +64,38 @@ const groupBounds = computed(() => selectedActive.value.length > 1 ? selectionBo
 const groupTransform = computed(() => groupBounds.value ? boundsToTransform(groupBounds.value) : null)
 const activeSelectedTransform = computed(() => selectedActive.value.find((clip) => clip.id === selected.value?.id)?.transform)
 const activeRatio = computed(() => matchingCanvasPreset(editor.project.settings.width, editor.project.settings.height))
+const textEditFrame = computed(() => {
+  if (!textEdit.value) return null
+  const clip = editor.project.clips.find((item) => item.id === textEdit.value?.id)
+  if (!clip) return null
+  return selectionOverlayFrame(clip.transform, zoom.value, editor.project.settings.width, editor.project.settings.height)
+})
 function queueDraw(): void { cancelAnimationFrame(animation); animation = requestAnimationFrame(() => { void draw() }) }
 async function draw(): Promise<void> {
   const element = canvas.value; if (!element) return
   const ctx = element.getContext('2d'); if (!ctx) return
   const { width, height } = editor.project.settings
   if (element.width !== width || element.height !== height) { element.width = width; element.height = height }
-  await renderer.render(ctx, editor.project, editor.project.currentFrame, media)
+  await renderer.render(ctx, editor.project, editor.project.currentFrame, { get: (clip) => media.get(mediaCacheKey(clip) ?? '') })
 }
-async function loadMaterial(id: string): Promise<void> {
-  if (media.has(id)) return
-  const item = editor.project.materials.find((material) => material.id === id); if (!item?.objectUrl) return
-  if (item.type === 'image') { const image = new Image(); image.src = item.objectUrl; await image.decode(); media.set(id, image) }
+async function loadMaterial(clip: TimelineClip): Promise<void> {
+  const key = mediaCacheKey(clip)
+  if (!key || media.has(key)) return
+  const item = editor.project.materials.find((material) => material.id === clip.materialId); if (!item?.objectUrl) return
+  if (item.type === 'image') { const image = new Image(); image.src = item.objectUrl; await image.decode(); media.set(key, image) }
   if (item.type === 'video') {
     const video = document.createElement('video'); video.src = item.objectUrl; video.muted = true; video.playsInline = true; video.preload = 'auto'
     await new Promise<void>((resolve) => video.addEventListener('loadeddata', () => resolve(), { once: true }))
-    video.addEventListener('seeked', queueDraw); media.set(id, video)
+    video.addEventListener('seeked', queueDraw); media.set(key, video)
   }
 }
-async function loadActiveMedia(): Promise<void> { await Promise.all(resolveActiveClips(editor.project, editor.project.currentFrame).map((clip) => clip.materialId ? loadMaterial(clip.materialId) : Promise.resolve())); syncVideoFrames(); queueDraw() }
+async function loadActiveMedia(): Promise<void> { await Promise.all(resolveActiveClips(editor.project, editor.project.currentFrame).map((clip) => clip.materialId ? loadMaterial(clip) : Promise.resolve())); syncVideoFrames(); queueDraw() }
 function syncVideoFrames(): void {
   resolveActiveClips(editor.project, editor.project.currentFrame).forEach((clip) => {
     if (clip.type !== 'video' || !clip.materialId) return
-    const video = media.get(clip.materialId)
+    const video = media.get(mediaCacheKey(clip) ?? '')
     if (!(video instanceof HTMLVideoElement)) return
+    video.playbackRate = clipSpeed(clip)
     const frame = sourceFrame(clip, editor.project.currentFrame)
     if (isPlaying.value) {
       const targetTime = frame / editor.project.settings.fps
@@ -92,7 +108,6 @@ function syncVideoFrames(): void {
 function projectPoint(event: PointerEvent): Point | null { const box = canvas.value?.getBoundingClientRect(); if (!box) return null; return { x: (event.clientX - box.left) * editor.project.settings.width / box.width, y: (event.clientY - box.top) * editor.project.settings.height / box.height } }
 function toLocal(point: Point, transform: Transform): Point { return rotatePoint({ x: point.x - transform.x, y: point.y - transform.y }, -transform.rotation) }
 function hitTest(x: number, y: number): TimelineClip | undefined { return [...resolveActiveClips(editor.project, editor.project.currentFrame)].reverse().find((clip) => { if (clip.type === 'audio') return false; const local = toLocal({ x, y }, clip.transform); const t = clip.transform; return Math.abs(local.x) <= t.width * t.scaleX / 2 && Math.abs(local.y) <= t.height * t.scaleY / 2 }) }
-function applySnap(id: string, x: number, y: number): void { const clip = editor.project.clips.find((item) => item.id === id); if (!clip) return; const snapped = snapTransform({ ...clip.transform, x, y }, editor.project.settings, resolveActiveClips(editor.project, editor.project.currentFrame).filter((item) => item.id !== id)); guides.value = snapped.guides; editor.updateTransform(id, snapped.transform); queueDraw() }
 function pointerDown(event: PointerEvent): void {
   const point = projectPoint(event); if (!point) return
   const clip = hitTest(point.x, point.y)
@@ -131,8 +146,22 @@ function pointerMove(event: PointerEvent): void {
     return
   }
   if (interaction.kind === 'drag') {
-    const dx = point.x - interaction.origin.x; const dy = point.y - interaction.origin.y
-    interaction.starts.forEach((item, index) => index === 0 ? applySnap(item.id, Math.round(item.x + dx), Math.round(item.y + dy)) : editor.updateTransform(item.id, { x: Math.round(item.x + dx), y: Math.round(item.y + dy) }))
+    const operation = interaction
+    const dx = point.x - operation.origin.x
+    const dy = point.y - operation.origin.y
+    const leader = editor.project.clips.find((item) => item.id === operation.starts[0]?.id)
+    if (!leader) return
+    const snapped = snappedGroupDelta(
+      operation.starts,
+      dx,
+      dy,
+      leader.transform,
+      editor.project.settings,
+      resolveActiveClips(editor.project, editor.project.currentFrame).filter((item) => !operation.starts.some((start) => start.id === item.id)),
+    )
+    guides.value = snapped.guides
+    operation.starts.forEach((item) => editor.updateTransform(item.id, { x: Math.round(item.x + snapped.x), y: Math.round(item.y + snapped.y) }))
+    queueDraw()
   }
   if (interaction.kind === 'resize') resizeSingle(interaction, point, event.shiftKey)
   if (interaction.kind === 'group-resize') {
@@ -161,7 +190,16 @@ function pointerUp(): void {
 function onDblclick(event: MouseEvent): void {
   const point = projectPoint(event as PointerEvent); if (!point) return
   const clip = hitTest(point.x, point.y)
-  if (clip?.type === 'text') editor.selectClip(clip.id)
+  if (clip?.type === 'text' && clip.text && isClipInteractable(editor.project, clip.id)) {
+    editor.selectClip(clip.id)
+    editor.commit()
+    textEdit.value = { id: clip.id, value: clip.text.content }
+  }
+}
+function commitTextEdit(): void {
+  if (!textEdit.value) return
+  editor.updateText(textEdit.value.id, { content: textEdit.value.value })
+  textEdit.value = null
 }
 function togglePlayback(): void { playback.toggle() }
 function fitView(): void {
@@ -193,7 +231,12 @@ function onRatioChange(event: Event): void {
   applyRatio(id as CanvasPresetId)
 }
 function onKeydown(event: KeyboardEvent): void {
-  const typing = (event.target as HTMLElement)?.matches('input, textarea, select')
+  const typing = isTypingTarget(event.target)
+  if (event.code === 'Escape' && textEdit.value) {
+    event.preventDefault()
+    textEdit.value = null
+    return
+  }
   if (event.code === 'Escape' && props.expanded) {
     event.preventDefault()
     emit('toggleExpand')
@@ -207,6 +250,10 @@ function resetMedia(): void {
   media.forEach((source) => { if (source instanceof HTMLVideoElement) { source.pause(); source.removeAttribute('src'); source.load() } })
   media.clear(); audio.dispose()
 }
+watch(() => textEdit.value?.id, (id) => {
+  if (!id) return
+  void nextTick(() => document.querySelector<HTMLTextAreaElement>('.canvas-text-edit')?.focus())
+})
 watch(() => editor.project.id, () => { resetMedia(); void loadActiveMedia() })
 watch(() => editor.project.materials.map((item) => `${item.id}:${item.objectUrl}:${item.missing}`).join('|'), () => { resetMedia(); void loadActiveMedia() })
 watch(() => [editor.project.currentFrame, editor.project.updatedAt, editor.selectedClipIds.join('|')], () => { void loadActiveMedia(); void audio.sync(editor.project, editor.project.currentFrame, isPlaying.value) })
@@ -234,24 +281,55 @@ onBeforeUnmount(() => {
 <template>
   <div class="preview-shell">
     <div class="preview-toolbar">
-      <span>主视图</span>
+      <span>预览</span>
       <div>
         <small class="preview-size">{{ editor.project.settings.width }}×{{ editor.project.settings.height }}</small>
-        <button type="button" title="缩小" @click="nudgeZoom(-0.1)">−</button>
-        <span>{{ Math.round(zoom * 100) }}%</span>
-        <button type="button" title="放大画面" @click="nudgeZoom(0.1)">＋</button>
-        <button type="button" title="适配窗口" @click="fitView">适配</button>
+        <UiTooltip text="缩小画面">
+          <button type="button" class="btn-icon" aria-label="缩小画面" @click="nudgeZoom(-0.1)"><UiIcon name="minus" /></button>
+        </UiTooltip>
+        <span class="preview-zoom">{{ Math.round(zoom * 100) }}%</span>
+        <UiTooltip text="放大画面">
+          <button type="button" class="btn-icon" aria-label="放大画面" @click="nudgeZoom(0.1)"><UiIcon name="plus" /></button>
+        </UiTooltip>
+        <UiTooltip text="适配窗口">
+          <button type="button" class="btn-icon" aria-label="适配窗口" @click="fitView"><UiIcon name="fit" /></button>
+        </UiTooltip>
       </div>
     </div>
-    <div ref="stage" class="preview-stage"><div class="canvas-shell" :style="{ width: `${editor.project.settings.width * zoom}px`, height: `${editor.project.settings.height * zoom}px` }"><canvas ref="canvas" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="onDblclick" /><TransformControls v-if="groupTransform || activeSelectedTransform" :transform="(groupTransform ?? activeSelectedTransform)!" :zoom="zoom" :canvas-width="editor.project.settings.width" :canvas-height="editor.project.settings.height" @handle-down="controlDown" /><span v-if="marquee" class="marquee" :style="{ left: `${marquee.left}px`, top: `${marquee.top}px`, width: `${marquee.width}px`, height: `${marquee.height}px` }" /><span v-for="guide in guides" :key="`${guide.orientation}-${guide.position}`" :class="['alignment-guide', guide.orientation]" :style="guide.orientation === 'vertical' ? { left: `${guide.position * zoom}px` } : { top: `${guide.position * zoom}px` }" /></div></div>
+    <!--主视图预览，主要是通过轨道的数据进行canvas渲染-->
+    <div ref="stage" class="preview-stage">
+      <div class="canvas-shell" :style="{ width: `${editor.project.settings.width * zoom}px`, height: `${editor.project.settings.height * zoom}px` }">
+        <canvas ref="canvas" @pointerdown="pointerDown" @pointermove="pointerMove" @pointerup="pointerUp" @pointercancel="pointerUp" @dblclick="onDblclick" />
+        <TransformControls v-if="!textEdit && (groupTransform || activeSelectedTransform)" :transform="(groupTransform ?? activeSelectedTransform)!" :zoom="zoom" :canvas-width="editor.project.settings.width" :canvas-height="editor.project.settings.height" :rotate="!groupTransform" @handle-down="controlDown" />
+        <textarea v-if="textEdit && textEditFrame" class="canvas-text-edit" :value="textEdit.value" :style="{ left: `${textEditFrame.x}px`, top: `${textEditFrame.y}px`, width: `${textEditFrame.width}px`, height: `${textEditFrame.height}px` }" @pointerdown.stop @input="textEdit.value = ($event.target as HTMLTextAreaElement).value" @blur="commitTextEdit" @keydown.enter.exact.prevent="commitTextEdit" />
+        <span v-if="marquee" class="marquee" :style="{ left: `${marquee.left}px`, top: `${marquee.top}px`, width: `${marquee.width}px`, height: `${marquee.height}px` }" />
+        <span v-for="guide in guides" :key="`${guide.orientation}-${guide.position}`" :class="['alignment-guide', guide.orientation]" :style="guide.orientation === 'vertical' ? { left: `${guide.position * zoom}px` } : { top: `${guide.position * zoom}px` }" />
+      </div>
+    </div>
     <div class="preview-controls">
       <div class="preview-transport">
-        <button type="button" @click="editor.setCurrentFrame(Math.max(0, editor.project.currentFrame - 1))">◀</button>
-        <button type="button" class="preview-play" @click="togglePlayback">{{ isPlaying ? '❚❚' : '▶' }}</button>
-        <button type="button" @click="editor.setCurrentFrame(Math.min(editor.project.settings.durationFrames - 1, editor.project.currentFrame + 1))">▶</button>
-        <span>{{ editor.project.currentFrame }}f · {{ editor.project.settings.fps }} FPS</span>
-      </div>
-      <div class="preview-view-tools">
+        <UiTooltip text="上一帧">
+          <button type="button" class="btn-icon" aria-label="上一帧" @click="editor.setCurrentFrame(Math.max(0, editor.project.currentFrame - 1))"><UiIcon name="prev" /></button>
+        </UiTooltip>
+        <UiTooltip text="播放 / 暂停" shortcut="空格">
+          <button type="button" class="btn-icon preview-play" aria-label="播放 / 暂停" @click="togglePlayback"><UiIcon :name="isPlaying ? 'pause' : 'play'" /></button>
+        </UiTooltip>
+        <UiTooltip text="下一帧">
+          <button type="button" class="btn-icon" aria-label="下一帧" @click="editor.setCurrentFrame(Math.min(editor.project.settings.durationFrames - 1, editor.project.currentFrame + 1))"><UiIcon name="next" /></button>
+        </UiTooltip>
+        <span class="transport-sep" />
+        <div class="preview-edit-tools" role="group" aria-label="分割与裁剪">
+          <UiTooltip text="向左裁剪：去掉播放头左边" shortcut="[">
+            <button type="button" class="preview-split left" aria-label="向左裁剪" :disabled="!editor.canSplitAtPlayhead" @click.stop="editor.splitSelectedLeft()"><UiIcon name="trimLeft" :size="18" /></button>
+          </UiTooltip>
+          <UiTooltip text="分割：在播放头处一分为二" shortcut="Ctrl+B">
+            <button type="button" class="preview-split cut" aria-label="分割" :disabled="!editor.canSplitAtPlayhead" @click.stop="editor.splitSelectedAtPlayhead()"><UiIcon name="splitClip" :size="18" /></button>
+          </UiTooltip>
+          <UiTooltip text="向右裁剪：去掉播放头右边" shortcut="]">
+            <button type="button" class="preview-split right" aria-label="向右裁剪" :disabled="!editor.canSplitAtPlayhead" @click.stop="editor.splitSelectedRight()"><UiIcon name="trimRight" :size="18" /></button>
+          </UiTooltip>
+        </div>
+        <span class="transport-sep" />
         <label class="preview-ratio">
           <span>比例</span>
           <select :value="activeRatio" :title="`${editor.project.settings.width}×${editor.project.settings.height}`" @change="onRatioChange">
@@ -259,7 +337,10 @@ onBeforeUnmount(() => {
             <option v-if="activeRatio === 'custom'" value="custom">自定义</option>
           </select>
         </label>
-        <button type="button" class="preview-expand" :title="expanded ? '还原主视图' : '放大主视图'" @click="emit('toggleExpand')">{{ expanded ? '还原' : '放大' }}</button>
+        <UiTooltip :text="expanded ? '还原主视图' : '放大主视图'">
+          <button type="button" class="btn-icon preview-expand" :aria-label="expanded ? '还原主视图' : '放大主视图'" @click="emit('toggleExpand')"><UiIcon :name="expanded ? 'restore' : 'expand'" /></button>
+        </UiTooltip>
+        <span class="preview-timecode">{{ frameToTimecode(editor.project.currentFrame, editor.project.settings.fps) }} · {{ editor.project.settings.fps }} FPS</span>
       </div>
     </div>
   </div>

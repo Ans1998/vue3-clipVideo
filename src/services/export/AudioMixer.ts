@@ -2,6 +2,7 @@ import type { EditorProject } from '@/types/editor'
 import { materialStorage } from '@/services/storage/IndexedDBService'
 import { sourceFrame } from '@/services/renderer/SceneRenderer'
 import { effectiveClipGain } from '@/utils/timeline/tracks'
+import { audioFade, clipSpeed } from '@/utils/timeline/clipPlayback'
 
 const SAMPLE_RATE = 48000
 const CHANNELS = 2
@@ -28,41 +29,58 @@ export async function mixProjectAudio(project: EditorProject, startFrame: number
     if (!decoded) continue
     const gain = effectiveClipGain(project, clip.id)
     if (gain <= 0) continue
+    const speed = clipSpeed(clip)
     const source = offline.createBufferSource()
     source.buffer = decoded
+    source.playbackRate.value = speed
     const node = offline.createGain()
-    node.gain.value = gain
+    const overlapStart = Math.max(startFrame, clip.startFrame)
+    const overlapEnd = Math.min(endFrame, clip.startFrame + clip.durationFrames)
+    const startSec = (clip.startFrame - startFrame) / fps
+    const offsetSec = sourceFrame(clip, overlapStart) / fps
+    const playDuration = (overlapEnd - overlapStart) / fps
+    if (playDuration <= 0) continue
+    const appear = Math.max(0, startSec)
+    node.gain.setValueAtTime(gain * audioFade(clip, overlapStart), appear)
+    const fadeInFrames = clip.audio?.fadeInFrames ?? clip.fadeInFrames ?? 0
+    const fadeOutFrames = clip.audio?.fadeOutFrames ?? clip.fadeOutFrames ?? 0
+    if (fadeInFrames > 0 && overlapStart < clip.startFrame + fadeInFrames) {
+      const fadeEnd = Math.min(overlapEnd, clip.startFrame + fadeInFrames)
+      node.gain.linearRampToValueAtTime(gain * audioFade(clip, fadeEnd), appear + (fadeEnd - overlapStart) / fps)
+    }
+    if (fadeOutFrames > 0 && overlapEnd > clip.startFrame + clip.durationFrames - fadeOutFrames) {
+      const fadeStart = Math.max(overlapStart, clip.startFrame + clip.durationFrames - fadeOutFrames)
+      node.gain.linearRampToValueAtTime(gain * audioFade(clip, fadeStart), appear + Math.max(0, fadeStart - overlapStart) / fps)
+      node.gain.linearRampToValueAtTime(0, appear + playDuration)
+    }
     source.connect(node)
     node.connect(offline.destination)
-    const startSec = (clip.startFrame - startFrame) / fps
-    const offsetSec = sourceFrame(clip, Math.max(startFrame, clip.startFrame)) / fps
-    const playDuration = Math.min((Math.min(endFrame, clip.startFrame + clip.durationFrames) - Math.max(startFrame, clip.startFrame)) / fps, Math.max(0, decoded.duration - offsetSec))
-    if (playDuration <= 0) continue
-    source.start(Math.max(0, startSec), Math.max(0, offsetSec), playDuration)
+    source.start(appear, Math.max(0, offsetSec), playDuration * speed)
     mixed += 1
   }
   if (!mixed) return null
   return offline.startRendering()
 }
 
-export async function mixOccupiedAudio(project: EditorProject, frames: number[], fps: number): Promise<AudioBuffer | null> {
+export async function mixOccupiedAudio(project: EditorProject, frames: number[], sourceFps: number, exportFps = sourceFps): Promise<AudioBuffer | null> {
   if (!frames.length) return null
-  const startFrame = frames[0]
-  const endFrame = frames[frames.length - 1] + 1
-  const mixed = await mixProjectAudio(project, startFrame, endFrame, fps)
+  const startFrame = Math.min(...frames)
+  const endFrame = Math.max(...frames) + 1
+  const mixed = await mixProjectAudio(project, startFrame, endFrame, sourceFps)
   if (!mixed) return null
-  if (frames.length === endFrame - startFrame) return mixed
-  const samplesPerFrame = mixed.sampleRate / fps
-  const length = Math.max(1, Math.round(frames.length * samplesPerFrame))
+  const samplesPerOutput = mixed.sampleRate / exportFps
+  const length = Math.max(1, Math.round(frames.length * samplesPerOutput))
   const compact = new OfflineAudioContext(mixed.numberOfChannels, length, mixed.sampleRate).createBuffer(mixed.numberOfChannels, length, mixed.sampleRate)
   for (let channel = 0; channel < mixed.numberOfChannels; channel += 1) {
     const source = mixed.getChannelData(channel)
     const dest = compact.getChannelData(channel)
+    let sub = 0
     frames.forEach((frame, index) => {
-      const from = Math.round((frame - startFrame) * samplesPerFrame)
-      const to = Math.round(index * samplesPerFrame)
-      const count = Math.min(Math.round(samplesPerFrame), source.length - from, dest.length - to)
+      const from = Math.round((frame - startFrame) * mixed.sampleRate / sourceFps + sub * samplesPerOutput)
+      const to = Math.round(index * samplesPerOutput)
+      const count = Math.min(Math.round(samplesPerOutput), source.length - from, dest.length - to)
       if (count > 0) dest.set(source.subarray(from, from + count), to)
+      sub = frames[index + 1] === frame ? sub + 1 : 0
     })
   }
   return compact

@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import type { Transform } from '@/types/editor'
 import { selectionOverlayFrame } from '@/utils/scene/selectionOverlay'
 
-const props = defineProps<{ transform: Transform; zoom: number; canvasWidth: number; canvasHeight: number }>()
+const props = defineProps<{ transform: Transform; zoom: number; canvasWidth: number; canvasHeight: number; rotate?: boolean }>()
 defineEmits<{ handleDown: [event: PointerEvent, handle: string] }>()
 
 const CORNERS = ['nw', 'ne', 'se', 'sw'] as const
@@ -28,7 +28,7 @@ const style = computed(() => {
   <div v-if="frame" class="transform-controls" :class="{ compact }" :style="style">
     <button v-for="handle in CORNERS" :key="handle" :class="`transform-handle handle-${handle}`" :aria-label="`调整 ${handle}`" @pointerdown="$emit('handleDown', $event, handle)" />
     <button v-for="handle in EDGES" v-show="!compact" :key="handle" :class="`transform-handle handle-${handle}`" :aria-label="`调整 ${handle}`" @pointerdown="$emit('handleDown', $event, handle)" />
-    <button class="rotate-handle" aria-label="旋转" @pointerdown="$emit('handleDown', $event, 'rotate')">↻</button>
+    <button v-if="rotate !== false" class="rotate-handle" aria-label="旋转" @pointerdown="$emit('handleDown', $event, 'rotate')" />
     <span class="transform-size">{{ Math.round(transform.width * transform.scaleX) }} × {{ Math.round(transform.height * transform.scaleY) }}</span>
   </div>
 </template>

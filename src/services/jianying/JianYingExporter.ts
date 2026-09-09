@@ -178,7 +178,7 @@ export class JianYingExporter implements DraftExporter {
     const packed: JianYingPackedFile[] = []
     for (const [index, item] of planned.entries()) {
       if (signal.aborted) throw abortError()
-      const material = project.materials.find((entry) => entry.id === item.materialId)
+      const material = project.materials.find((entry) => entry.id === item.sourceId || entry.id === item.materialId)
       const blob = material ? await loadMaterialBlob(material) : null
       if (!blob) {
         missingNames.push(material?.name ?? item.fileName)
@@ -197,7 +197,7 @@ export class JianYingExporter implements DraftExporter {
     if (missingNames.length) {
       throw new Error(`以下素材无法写入草稿，剪映会显示媒体缺失：${missingNames.join('、')}。请先在素材列表点「关联」重新选择文件。`)
     }
-    const packedIds = new Set(packed.map((item) => item.materialId))
+    const packedIds = new Set(packed.map((item) => item.sourceId))
     const leftover = [...usedMaterialIds(project)].filter((id) => !packedIds.has(id))
     if (leftover.length) throw new Error('时间轴引用了未打包的素材，请重新关联后再导出剪映草稿')
 

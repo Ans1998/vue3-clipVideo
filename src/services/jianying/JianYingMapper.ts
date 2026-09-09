@@ -9,8 +9,9 @@ import {
   JIANYING_VERSION_CODE,
   mapTransform,
 } from '@/services/jianying/JianYingTemplate'
-import type { JianYingPackedResource } from '@/services/jianying/resources'
+import { audioAliasId, type JianYingPackedResource } from '@/services/jianying/resources'
 import { exportContentRange } from '@/utils/timeline/exportRange'
+import { clipSpeed } from '@/utils/timeline/clipPlayback'
 
 const TRACK_TYPE: Record<TimelineTrack['type'], string> = { visual: 'video', audio: 'audio', text: 'text' }
 
@@ -105,21 +106,28 @@ function audioMaterial(resource: JianYingPackedResource): Record<string, unknown
   }
 }
 
-function speedMaterial(id: string): Record<string, unknown> {
-  return { id, mode: 0, speed: 1, type: 'speed' }
+function speedMaterial(id: string, speed = 1): Record<string, unknown> {
+  return { id, mode: 0, speed, type: 'speed' }
 }
 
-function clipSegment(project: EditorProject, clip: EditorProject['clips'][number], extraMaterialRefs: string[]): Record<string, unknown> {
+function clipMaterialId(clip: EditorProject['clips'][number], resources: JianYingPackedResource[]): string {
+  if (clip.type === 'text') return clip.id
+  if (clip.type === 'audio' && clip.materialId && packedOf(resources, audioAliasId(clip.materialId))) return audioAliasId(clip.materialId)
+  return clip.materialId ?? clip.id
+}
+
+function clipSegment(project: EditorProject, clip: EditorProject['clips'][number], extraMaterialRefs: string[], resources: JianYingPackedResource[]): Record<string, unknown> {
   const { width, height, fps } = project.settings
   const transform = mapTransform(clip.transform.x, clip.transform.y, clip.transform.width, clip.transform.height, clip.transform.scaleX, clip.transform.scaleY, clip.transform.rotation, clip.transform.opacity, width, height)
   const track = project.tracks.find((item) => item.id === clip.trackId)
+  const speed = clipSpeed(clip)
   return {
     id: clip.id,
-    material_id: clip.type === 'text' ? clip.id : clip.materialId ?? clip.id,
+    material_id: clipMaterialId(clip, resources),
     extra_material_refs: extraMaterialRefs,
     target_timerange: { start: framesToUs(clip.startFrame, fps), duration: framesToUs(clip.durationFrames, fps) },
-    source_timerange: { start: framesToUs(clip.offsetFrame, fps), duration: framesToUs(clip.durationFrames, fps) },
-    speed: 1,
+    source_timerange: { start: framesToUs(clip.offsetFrame, fps), duration: framesToUs(Math.max(1, Math.round(clip.durationFrames * speed)), fps) },
+    speed,
     volume: clip.audio?.muted || track?.muted ? 0 : clip.audio?.volume ?? 1,
     visible: !track?.hidden,
     reverse: false,
@@ -166,9 +174,12 @@ export function mapProjectToDraft(project: EditorProject, resources: JianYingPac
       seen.add(`video:${packed.materialId}`)
       videos.push(videoMaterial(packed, clip.type === 'image' ? 'photo' : 'video'))
     }
-    if (clip.type === 'audio' && packed && !seen.has(`audio:${packed.materialId}`)) {
-      seen.add(`audio:${packed.materialId}`)
-      audios.push(audioMaterial(packed))
+    if (clip.type === 'audio') {
+      const audioPack = clip.materialId ? packedOf(resources, audioAliasId(clip.materialId)) ?? packed : packed
+      if (audioPack && !seen.has(`audio:${audioPack.materialId}`)) {
+        seen.add(`audio:${audioPack.materialId}`)
+        audios.push(audioMaterial(audioPack))
+      }
     }
     if (clip.type === 'text' && clip.text) texts.push(textMaterial(clip.id, clip.text))
   })
@@ -178,10 +189,10 @@ export function mapProjectToDraft(project: EditorProject, resources: JianYingPac
       const extraMaterialRefs: string[] = []
       if (clip.type !== 'text') {
         const speedId = hexId()
-        speeds.push(speedMaterial(speedId))
+        speeds.push(speedMaterial(speedId, clipSpeed(clip)))
         extraMaterialRefs.push(speedId)
       }
-      return clipSegment(project, clip, extraMaterialRefs)
+      return clipSegment(project, clip, extraMaterialRefs, resources)
     })
     return {
       attribute: 0,

@@ -2,6 +2,7 @@ import type { EditorProject } from '@/types/editor'
 import { sourceFrame } from '@/services/renderer/SceneRenderer'
 import { seekMediaToFrame } from '@/utils/media/seek'
 import { effectiveClipGain } from '@/utils/timeline/tracks'
+import { audioFade, clipSpeed } from '@/utils/timeline/clipPlayback'
 
 export class PreviewAudioMixer {
   private readonly elements = new Map<string, HTMLMediaElement>()
@@ -20,6 +21,9 @@ export class PreviewAudioMixer {
     this.elements.forEach((element, id) => {
       if (keep.has(id)) return
       element.pause()
+      element.removeAttribute('src')
+      element.load()
+      this.elements.delete(id)
     })
     await Promise.all(active.map(async (clip) => {
       const material = project.materials.find((item) => item.id === clip.materialId)
@@ -36,8 +40,10 @@ export class PreviewAudioMixer {
           element!.addEventListener('error', () => resolve(), { once: true })
         })
       }
-      element.volume = effectiveClipGain(project, clip.id)
-      element.muted = element.volume === 0
+      element.playbackRate = clipSpeed(clip)
+      const volume = Math.max(0, Math.min(1, effectiveClipGain(project, clip.id) * audioFade(clip, frame)))
+      element.volume = volume
+      element.muted = volume === 0
       const target = sourceFrame(clip, frame) / project.settings.fps
       if (!playing) {
         element.pause()

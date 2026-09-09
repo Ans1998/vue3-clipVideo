@@ -17,9 +17,9 @@ const exporter = useExportStore()
     </div>
     <p class="progress-label">{{ exporter.progress?.percent ?? 0 }}%</p>
     <p v-if="exporter.progress" class="hint">
-      {{ frameToTimecode(exporter.progress.current, editor.project.settings.fps) }}
+      {{ frameToTimecode(exporter.progress.current, exporter.activeFps || editor.project.settings.fps) }}
       /
-      {{ frameToTimecode(exporter.progress.total, editor.project.settings.fps) }}
+      {{ frameToTimecode(exporter.progress.total, exporter.activeFps || editor.project.settings.fps) }}
       · 已用 {{ formatClock(exporter.progress.elapsedMs) }}
       <template v-if="exporter.progress.remainingMs != null"> · 预计剩余 {{ formatClock(exporter.progress.remainingMs) }}</template>
     </p>

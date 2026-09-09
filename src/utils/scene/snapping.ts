@@ -28,3 +28,17 @@ export function snapTransform(transform: Transform, projectSize: { width: number
   })
   return { transform: result, guides }
 }
+
+export function snappedGroupDelta(
+  starts: Array<{ id: string; x: number; y: number }>,
+  dx: number,
+  dy: number,
+  leader: Transform,
+  projectSize: { width: number; height: number },
+  others: TimelineClip[],
+): { x: number; y: number; guides: AlignmentGuide[] } {
+  const origin = starts[0]
+  if (!origin) return { x: dx, y: dy, guides: [] }
+  const snapped = snapTransform({ ...leader, x: origin.x + dx, y: origin.y + dy }, projectSize, others)
+  return { x: snapped.transform.x - origin.x, y: snapped.transform.y - origin.y, guides: snapped.guides }
+}

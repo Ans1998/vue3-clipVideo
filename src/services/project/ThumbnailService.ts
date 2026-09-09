@@ -2,7 +2,7 @@ import type { EditorProject } from '@/types/editor'
 import { CanvasSceneRenderer } from '@/services/renderer/SceneRenderer'
 import { MaterialAssetLoader } from '@/services/renderer/MaterialAssetLoader'
 
-const THUMB_WIDTH = 320
+const THUMB_WIDTH = 480
 
 export async function captureProjectThumbnail(project: EditorProject): Promise<Blob> {
   const source = document.createElement('canvas')
@@ -25,7 +25,7 @@ export async function captureProjectThumbnail(project: EditorProject): Promise<B
   const thumbCtx = thumb.getContext('2d')
   if (!thumbCtx) throw new Error('无法缩放项目缩略图')
   thumbCtx.drawImage(source, 0, 0, THUMB_WIDTH, height)
-  const blob = await new Promise<Blob | null>((resolve) => thumb.toBlob(resolve, 'image/jpeg', 0.82))
+  const blob = await new Promise<Blob | null>((resolve) => thumb.toBlob(resolve, 'image/jpeg', 0.9))
   if (!blob) throw new Error('缩略图编码失败')
   return blob
 }

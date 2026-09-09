@@ -45,7 +45,7 @@ export class WebCodecsExporter implements VideoExporter {
     if (!videoCodec) throw new Error('当前浏览器不支持所选格式的 WebCodecs 编码器')
 
     handlers.onProgress?.({ currentFrame: 0, totalFrames, percent: 0, elapsedMs: 0, remainingMs: null, message: '正在混合音频...' })
-    const audioBuffer = await mixOccupiedAudio(project, frames, options.fps)
+    const audioBuffer = await mixOccupiedAudio(project, frames, project.settings.fps, options.fps)
     if (signal.aborted) throw abortError()
     const audioCodec = audioBuffer ? await pickAudioCodec(options.format, audioBuffer.numberOfChannels, audioBuffer.sampleRate) : null
     if (audioBuffer && !audioCodec) throw new Error('当前浏览器无法用 WebCodecs 编码音频')

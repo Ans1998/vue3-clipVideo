@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { ExportManager } from '@/services/export/ExportManager'
-import { FFmpegExporter } from '@/services/export/FFmpegExporter'
 import { detectExportCapabilities } from '@/services/export/VideoExporter'
 import { WebCodecsExporter } from '@/services/export/WebCodecsExporter'
 import { WebVideoExporter } from '@/services/export/WebVideoExporter'
@@ -16,7 +15,7 @@ import { sanitizeFileName } from '@/utils/format'
 export const useExportStore = defineStore('export', () => {
   const editor = useEditorStore()
   const capabilities = detectExportCapabilities()
-  const manager = new ExportManager([new WebCodecsExporter(), new WebVideoExporter(), new FFmpegExporter()])
+  const manager = new ExportManager([new WebCodecsExporter(), new WebVideoExporter()])
   const jianying = new JianYingExporter()
   const jianyingRunner = new TaskRunner()
   const dialogOpen = ref(false)
@@ -25,6 +24,7 @@ export const useExportStore = defineStore('export', () => {
   const progress = ref<TaskSnapshot | null>(null)
   const result = ref<ExportResult | null>(null)
   const error = ref('')
+  const activeFps = ref(30)
   const busy = computed(() => progress.value?.status === 'running' || progress.value?.status === 'cancelling')
 
   function open(): void {
@@ -53,6 +53,7 @@ export const useExportStore = defineStore('export', () => {
     view.value = 'progress'
     error.value = ''
     result.value = null
+    activeFps.value = options.fps
     try {
       const exported = await manager.run(cloneProject(editor.project), options, (snapshot) => { progress.value = { ...snapshot } })
       result.value = exported
@@ -141,5 +142,5 @@ export const useExportStore = defineStore('export', () => {
     return sanitizeFileName(editor.project.name)
   }
 
-  return { capabilities, canPickJianYingDirectory, dialogOpen, jianyingOpen, view, progress, result, error, busy, open, openJianYing, close, start, startJianYing, cancel, retry, download, defaultFileName }
+  return { capabilities, canPickJianYingDirectory, dialogOpen, jianyingOpen, view, progress, result, error, busy, activeFps, open, openJianYing, close, start, startJianYing, cancel, retry, download, defaultFileName }
 })

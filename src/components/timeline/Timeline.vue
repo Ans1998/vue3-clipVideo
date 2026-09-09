@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ContextMenu, { type MenuItem } from '@/components/layout/ContextMenu.vue'
+import ClipWaveform from '@/components/timeline/ClipWaveform.vue'
 import { useEditorStore } from '@/stores/editor'
 import { useNotifyStore } from '@/stores/notify'
 import { pausePreviewPlayback } from '@/services/playback/registry'
@@ -8,8 +9,12 @@ import { frameToPixel, pixelToFrame } from '@/utils/timeline/coordinate'
 import { frameToTimecode } from '@/utils/timeline/timecode'
 import { canDetachAudio, canRemoveTrack, findTrack, isClipInteractable, RULER_ROW, resolveTrackDrop, toTrackType, TRACK_ROW, TYPE_LABEL, TYPE_SHORT, visibleClips, type TrackDropHint } from '@/utils/timeline/tracks'
 import { fitPixelsPerFrame, limitedMoveDelta, trimLeftTo, trimRightTo, zoomPixelsPerFrame } from '@/utils/timeline/timing'
+import { resolvedTransition, transitionLabel } from '@/utils/timeline/clipPlayback'
 import { buildRulerTicks } from '@/utils/timeline/ruler'
+import { materialTypeOf } from '@/utils/media/metadata'
 import type { ClipType, TimelineClip, TimelineTrack, TrackType } from '@/types/editor'
+import UiIcon from '@/components/layout/UiIcon.vue'
+import UiTooltip from '@/components/layout/UiTooltip.vue'
 
 type Interaction =
   | { kind: 'playhead' }
@@ -52,6 +57,9 @@ const menuItems = computed<MenuItem[]>(() => {
     { id: 'cut', label: '剪切', shortcut: 'Ctrl+X', disabled: !hasSelection },
     { id: 'paste', label: '粘贴', shortcut: 'Ctrl+V', disabled: !editor.hasClipboard },
     { id: 'duplicate', label: '创建副本', shortcut: 'Ctrl+D', disabled: !hasSelection },
+    { id: 'split', label: '分割', shortcut: 'Ctrl+B', disabled: !hasSelection },
+    { id: 'split-left', label: '向左裁剪', shortcut: '[', disabled: !hasSelection },
+    { id: 'split-right', label: '向右裁剪', shortcut: ']', disabled: !hasSelection },
     { id: 'sep-select', label: '', separator: true },
     { id: 'select-all', label: '全选', shortcut: 'Ctrl+A' },
     { id: 'delete', label: '删除', shortcut: 'Delete', disabled: !hasSelection, danger: true },
@@ -76,11 +84,22 @@ const ghost = computed(() => {
 const draggingPlayhead = computed(() => interaction.value?.kind === 'playhead')
 function left(clip: TimelineClip): string { return `${frameToPixel(clip.startFrame, editor.pixelsPerFrame)}px` }
 function width(clip: TimelineClip): string { return `${Math.max(24, frameToPixel(clip.durationFrames, editor.pixelsPerFrame))}px` }
+function introFrames(clip: TimelineClip): number {
+  const intro = resolvedTransition(clip, 'in')
+  return intro.kind === 'none' ? 0 : intro.durationFrames
+}
+function outroFrames(clip: TimelineClip): number {
+  const outro = resolvedTransition(clip, 'out')
+  return outro.kind === 'none' ? 0 : outro.durationFrames
+}
+function introLabel(clip: TimelineClip): string { return transitionLabel(resolvedTransition(clip, 'in').kind, 'in') }
+function outroLabel(clip: TimelineClip): string { return transitionLabel(resolvedTransition(clip, 'out').kind, 'out') }
 function localFrame(event: MouseEvent): number { const box = scroll.value?.getBoundingClientRect(); return box ? pixelToFrame(event.clientX - box.left + scroll.value!.scrollLeft, editor.pixelsPerFrame) : 0 }
 function canvasY(event: MouseEvent): number { const box = scroll.value?.getBoundingClientRect(); return box ? event.clientY - box.top + scroll.value!.scrollTop : 0 }
-function startPlayhead(event: PointerEvent): void {
+function startPlayhead(event: PointerEvent, track?: TimelineTrack): void {
   if (event.button !== 0) return
   event.stopPropagation()
+  if (track) editor.selectTrack(track.id)
   pausePreviewPlayback()
   interaction.value = { kind: 'playhead' }
   editor.setCurrentFrame(localFrame(event))
@@ -165,6 +184,10 @@ function materialFromDrag(): ReturnType<typeof editor.project.materials.find> {
   return editor.project.materials.find((item) => item.id === editor.dragMaterialId)
 }
 function onDragOver(event: DragEvent): void {
+  if (event.dataTransfer?.types.includes('Files') && !editor.dragMaterialId) {
+    event.preventDefault()
+    return
+  }
   const material = materialFromDrag(); if (!material) return
   event.preventDefault()
   dropHint.value = resolveTrackDrop(canvasY(event), editor.orderedTracks, material.type)
@@ -174,7 +197,28 @@ function onDragLeave(event: DragEvent): void {
   if (next && scroll.value?.contains(next)) return
   if (!interaction.value) dropHint.value = null
 }
-function dropMaterial(event: DragEvent): void {
+async function dropMaterial(event: DragEvent): Promise<void> {
+  const files = Array.from(event.dataTransfer?.files ?? [])
+  if (files.length && !editor.dragMaterialId) {
+    event.preventDefault()
+    dropHint.value = null
+    const frame = localFrame(event)
+    for (const file of files) {
+      try {
+        const type = materialTypeOf(file)
+        if (!type) throw new Error('仅支持视频、图片和音频素材')
+        const hint = resolveTrackDrop(canvasY(event), editor.orderedTracks, type)
+        if (hint.kind === 'blocked') { notify.push('warn', '轨道已锁定'); continue }
+        const material = await editor.addMaterial(file)
+        if (hint.kind === 'new') editor.addClip(material, frame, 'new', true)
+        else if (hint.kind === 'insert') editor.addClip(material, frame, 'new', true, hint.afterOrder)
+        else editor.addClip(material, frame, hint.trackId)
+      } catch (reason) {
+        notify.push('error', reason instanceof Error ? reason.message : '素材导入失败')
+      }
+    }
+    return
+  }
   const material = materialFromDrag(); dropHint.value = null; editor.dragMaterialId = ''
   if (!material) return
   event.preventDefault()
@@ -211,6 +255,9 @@ function onMenuSelect(id: string): void {
   else if (id === 'cut') editor.cutSelected()
   else if (id === 'paste') editor.pasteAtFrame(target?.frame ?? editor.project.currentFrame, target?.trackId)
   else if (id === 'duplicate') editor.duplicateSelected()
+  else if (id === 'split') editor.splitSelectedAtPlayhead()
+  else if (id === 'split-left') editor.splitSelectedLeft()
+  else if (id === 'split-right') editor.splitSelectedRight()
   else if (id === 'select-all') editor.selectAllClips()
   else if (id === 'delete') editor.removeSelected()
   else if (id === 'detach-audio') editor.splitClipAudio(target?.clipId)
@@ -232,6 +279,28 @@ function fitTimeline(): void {
   const width = scroll.value?.clientWidth ?? 800
   editor.pixelsPerFrame = fitPixelsPerFrame(width, editor.project.settings.durationFrames)
 }
+function zoomTimeline(direction: 1 | -1, event?: WheelEvent): void {
+  const element = scroll.value
+  const next = zoomPixelsPerFrame(editor.pixelsPerFrame, direction)
+  if (next === editor.pixelsPerFrame) return
+  if (!element) {
+    editor.pixelsPerFrame = next
+    return
+  }
+  const box = element.getBoundingClientRect()
+  const overCanvas = event ? event.clientX >= box.left : false
+  const cursorOffset = event && overCanvas ? event.clientX - box.left : element.clientWidth / 2
+  const frame = pixelToFrame(element.scrollLeft + cursorOffset, editor.pixelsPerFrame)
+  editor.pixelsPerFrame = next
+  element.scrollLeft = Math.max(0, frameToPixel(frame, next) - cursorOffset)
+}
+function onWheel(event: WheelEvent): void {
+  if (interaction.value) return
+  const selected = editor.selectedTrackId || editor.selectedClip?.trackId
+  if (!selected && !event.ctrlKey && !event.metaKey) return
+  event.preventDefault()
+  zoomTimeline(event.deltaY < 0 ? 1 : -1, event)
+}
 watch(() => editor.project.currentFrame, followPlayhead)
 watch(() => [editor.pixelsPerFrame, editor.project.settings.durationFrames], () => updateViewport())
 onMounted(() => { scroll.value?.addEventListener('scroll', updateViewport, { passive: true }); updateViewport() })
@@ -241,32 +310,57 @@ onUnmounted(() => scroll.value?.removeEventListener('scroll', updateViewport))
 <template>
   <div class="timeline-header">
     <span>时间轴</span>
-    <small class="timeline-hint">拖边缘可拉长/裁短 · 适配窗口可看完整时长</small>
     <div>
-      <button type="button" title="缩小" @click="editor.pixelsPerFrame = zoomPixelsPerFrame(editor.pixelsPerFrame, -1)">−</button>
-      <button type="button" title="放大" @click="editor.pixelsPerFrame = zoomPixelsPerFrame(editor.pixelsPerFrame, 1)">＋</button>
-      <button type="button" title="适配时间轴" @click="fitTimeline">适配</button>
-      <span>{{ frameToTimecode(editor.project.currentFrame, editor.project.settings.fps) }}</span>
+      <UiTooltip text="波纹删除：后面的片段会前移">
+        <button type="button" class="btn" :class="{ active: editor.project.settings.rippleEdit !== false }" @click="editor.toggleRippleEdit()">波纹</button>
+      </UiTooltip>
+      <UiTooltip text="缩小时间轴">
+        <button type="button" class="btn-icon" aria-label="缩小时间轴" @click="zoomTimeline(-1)"><UiIcon name="minus" /></button>
+      </UiTooltip>
+      <UiTooltip text="放大时间轴">
+        <button type="button" class="btn-icon" aria-label="放大时间轴" @click="zoomTimeline(1)"><UiIcon name="plus" /></button>
+      </UiTooltip>
+      <UiTooltip text="适配时间轴 · 选中轨道后滚轮也可缩放">
+        <button type="button" class="btn-icon" aria-label="适配时间轴" @click="fitTimeline"><UiIcon name="fit" /></button>
+      </UiTooltip>
+      <span class="tabular">{{ frameToTimecode(editor.project.currentFrame, editor.project.settings.fps) }}</span>
     </div>
   </div>
-  <div class="timeline-body">
+  <div class="timeline-body" @wheel="onWheel">
     <div class="track-labels">
       <div class="ruler-spacer">时间</div>
       <div ref="labels" class="track-label-list">
-      <div v-for="track in editor.orderedTracks" :key="track.id" class="track-label" :class="{ locked: track.locked, hidden: track.hidden, muted: track.muted, 'drop-onto': dropHint?.kind === 'onto' && dropHint.trackId === track.id }" @contextmenu="openLabelMenu($event, track)">
+      <div v-for="track in editor.orderedTracks" :key="track.id" class="track-label" :class="{ locked: track.locked, hidden: track.hidden, muted: track.muted, selected: editor.selectedTrackId === track.id, 'drop-onto': dropHint?.kind === 'onto' && dropHint.trackId === track.id }" @pointerdown="editor.selectTrack(track.id)" @contextmenu="openLabelMenu($event, track)">
         <i :class="['track-kind', track.type]">{{ TYPE_SHORT[track.type] }}</i>
         <span>{{ track.name }}</span>
-        <button type="button" class="track-action" :class="{ active: !track.hidden }" :title="track.hidden ? '显示轨道' : '隐藏轨道'" @click="editor.toggleTrackHidden(track.id)">{{ track.hidden ? '🙈' : '👁' }}</button>
-        <button type="button" class="track-action" :class="{ active: !track.muted }" :title="track.muted ? '取消静音' : '静音轨道'" @click="editor.toggleTrackMuted(track.id)">{{ track.muted ? '🔇' : '🔊' }}</button>
-        <button type="button" class="track-action" :title="track.locked ? '解锁轨道' : '锁定轨道'" @click="editor.toggleTrackLock(track.id)">{{ track.locked ? '🔒' : '🔓' }}</button>
-        <button type="button" class="track-action" title="在下方新建同类型轨道" @click="editor.addTrack(track.type, track.order)">＋</button>
-        <button v-if="removable(track)" type="button" class="track-action track-remove" title="删除空轨道" @click="editor.removeTrack(track.id)">×</button>
+        <div class="track-flags" aria-hidden="true">
+          <UiIcon v-if="track.hidden" name="eyeOff" :size="11" />
+          <UiIcon v-if="track.muted" name="volumeOff" :size="11" />
+          <UiIcon v-if="track.locked" name="lock" :size="11" />
+        </div>
+        <div class="track-tools">
+          <UiTooltip :text="track.hidden ? '显示轨道' : '隐藏轨道'">
+            <button type="button" class="track-action" :class="{ active: !track.hidden }" :aria-label="track.hidden ? '显示轨道' : '隐藏轨道'" @click="editor.toggleTrackHidden(track.id)"><UiIcon :name="track.hidden ? 'eyeOff' : 'eye'" :size="12" /></button>
+          </UiTooltip>
+          <UiTooltip :text="track.muted ? '取消静音' : '静音轨道'">
+            <button type="button" class="track-action" :class="{ active: !track.muted }" :aria-label="track.muted ? '取消静音' : '静音轨道'" @click="editor.toggleTrackMuted(track.id)"><UiIcon :name="track.muted ? 'volumeOff' : 'volume'" :size="12" /></button>
+          </UiTooltip>
+          <UiTooltip :text="track.locked ? '解锁轨道' : '锁定轨道'">
+            <button type="button" class="track-action" :aria-label="track.locked ? '解锁轨道' : '锁定轨道'" @click="editor.toggleTrackLock(track.id)"><UiIcon :name="track.locked ? 'lock' : 'unlock'" :size="12" /></button>
+          </UiTooltip>
+          <UiTooltip text="在下方新建同类型轨道">
+            <button type="button" class="track-action" aria-label="在下方新建同类型轨道" @click="editor.addTrack(track.type, track.order)"><UiIcon name="plus" :size="12" /></button>
+          </UiTooltip>
+          <UiTooltip v-if="removable(track)" text="删除空轨道">
+            <button type="button" class="track-action track-remove" aria-label="删除空轨道" @click="editor.removeTrack(track.id)"><UiIcon name="close" :size="12" /></button>
+          </UiTooltip>
+        </div>
       </div>
       <div class="track-label new-track-label" :class="{ active: dropHint?.kind === 'new' }">
         <span>新建轨道</span>
-        <button type="button" class="track-add-type" title="新建画面轨" @click="editor.addTrack('visual')">画</button>
-        <button type="button" class="track-add-type" title="新建文字轨" @click="editor.addTrack('text')">文</button>
-        <button type="button" class="track-add-type" title="新建音频轨" @click="editor.addTrack('audio')">音</button>
+        <UiTooltip text="新建画面轨"><button type="button" class="track-add-type" aria-label="新建画面轨" @click="editor.addTrack('visual')">画</button></UiTooltip>
+        <UiTooltip text="新建文字轨"><button type="button" class="track-add-type" aria-label="新建文字轨" @click="editor.addTrack('text')">文</button></UiTooltip>
+        <UiTooltip text="新建音频轨"><button type="button" class="track-add-type" aria-label="新建音频轨" @click="editor.addTrack('audio')">音</button></UiTooltip>
       </div>
       </div>
     </div>
@@ -289,8 +383,8 @@ onUnmounted(() => scroll.value?.removeEventListener('scroll', updateViewport))
           class="ruler-grid"
           :style="{ left: `${frameToPixel(tick.frame, editor.pixelsPerFrame)}px` }"
         />
-        <div v-for="track in editor.orderedTracks" :key="track.id" class="timeline-track" :class="{ locked: track.locked, hidden: track.hidden, muted: track.muted, 'drop-onto': dropHint?.kind === 'onto' && dropHint.trackId === track.id }" @pointerdown="startPlayhead" @pointermove="move" @pointerup="endInteraction" @contextmenu="openTrackMenu($event, track)">
-          <button v-for="clip in clipsFor(track.id)" :key="clip.id" :class="['timeline-clip', clip.type, { selected: editor.selectedClipIds.includes(clip.id) }]" :style="{ left: left(clip), width: width(clip) }" @pointerdown="startMove($event, clip)" @pointermove="move" @pointerup="endInteraction" @pointercancel="endInteraction" @contextmenu="openClipMenu($event, clip)"><span class="trim-handle left" @pointerdown="startTrim($event, clip, 'left')" /><span class="clip-title">{{ clip.name }}</span><span class="trim-handle right" @pointerdown="startTrim($event, clip, 'right')" /></button>
+        <div v-for="track in editor.orderedTracks" :key="track.id" class="timeline-track" :class="{ locked: track.locked, hidden: track.hidden, muted: track.muted, selected: editor.selectedTrackId === track.id, 'drop-onto': dropHint?.kind === 'onto' && dropHint.trackId === track.id }" @pointerdown="startPlayhead($event, track)" @pointermove="move" @pointerup="endInteraction" @contextmenu="openTrackMenu($event, track)">
+          <button v-for="clip in clipsFor(track.id)" :key="clip.id" :class="['timeline-clip', clip.type, { selected: editor.selectedClipIds.includes(clip.id), locked: clip.locked }]" :style="{ left: left(clip), width: width(clip) }" @pointerdown="startMove($event, clip)" @pointermove="move" @pointerup="endInteraction" @pointercancel="endInteraction" @contextmenu="openClipMenu($event, clip)"><span class="trim-handle left" @pointerdown="startTrim($event, clip, 'left')" /><i v-if="introFrames(clip)" class="fade-mark in" :style="{ width: `${Math.min(100, (introFrames(clip) / clip.durationFrames) * 100)}%` }" /><ClipWaveform v-if="clip.type === 'audio' && clip.materialId" :material-id="clip.materialId" /><span class="clip-title">{{ clip.name }}</span><b v-if="introLabel(clip)" class="clip-transition in">{{ introLabel(clip) }}</b><b v-if="(clip.speed ?? 1) !== 1" class="clip-speed">×{{ clip.speed }}</b><b v-if="outroLabel(clip)" class="clip-transition out">{{ outroLabel(clip) }}</b><i v-if="outroFrames(clip)" class="fade-mark out" :style="{ width: `${Math.min(100, (outroFrames(clip) / clip.durationFrames) * 100)}%` }" /><span class="trim-handle right" @pointerdown="startTrim($event, clip, 'right')" /></button>
         </div>
         <div class="timeline-track new-track-drop" :class="{ active: dropHint?.kind === 'new' }">{{ editor.project.clips.length ? dropCaption : '将素材拖入时间轴开始编辑' }}</div>
         <div v-if="ghost" class="timeline-clip ghost" :class="ghost.type" :style="{ left: ghost.left, width: ghost.width, top: ghost.top }" />

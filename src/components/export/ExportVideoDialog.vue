@@ -5,7 +5,8 @@ import { useEditorStore } from '@/stores/editor'
 import { useExportStore } from '@/stores/export'
 import { frameToTimecode, timecodeToFrame } from '@/utils/timeline/timecode'
 import { evenSize } from '@/services/export/codecs'
-import { exportContentRange, occupiedExportFrames } from '@/utils/timeline/exportRange'
+import { exportContentRange, resolveExportTimeline } from '@/utils/timeline/exportRange'
+import { isTrackHidden } from '@/utils/timeline/tracks'
 import { EXPORT_FPS_OPTIONS, QUALITY_LABELS, RESOLUTION_PRESETS, type ExportFormat, type ExportQuality, type ExportRangeMode, type ExportResolutionPreset } from '@/types/export'
 import type { ProjectSettings } from '@/types/editor'
 
@@ -55,7 +56,7 @@ function applyPreset(preset: ExportResolutionPreset): void {
 }
 
 function clipRange(): { startFrame: number; endFrame: number } | null {
-  const selected = editor.project.clips.filter((clip) => editor.selectedClipIds.includes(clip.id))
+  const selected = editor.project.clips.filter((clip) => editor.selectedClipIds.includes(clip.id) && !isTrackHidden(editor.project, clip.trackId))
   if (!selected.length) return exportContentRange(editor.project)
   return {
     startFrame: Math.min(...selected.map((clip) => clip.startFrame)),
@@ -74,7 +75,7 @@ function resolvedRange(): { startFrame: number; endFrame: number } | null {
 const occupiedFrames = computed(() => {
   const range = resolvedRange()
   if (!range) return []
-  return occupiedExportFrames(editor.project, range.startFrame, range.endFrame)
+  return resolveExportTimeline(editor.project, { startFrame: range.startFrame, endFrame: range.endFrame, fps: form.fps })
 })
 
 const rangeSummary = computed(() => {
@@ -143,7 +144,7 @@ function submit(): void {
     </div>
     <p v-if="form.rangeMode === 'custom' && rangeError" class="error-message">{{ rangeError }}</p>
     <p v-else-if="!occupiedFrames.length" class="error-message">时间轴上没有可导出的内容</p>
-    <p class="hint">预计导出：{{ rangeSummary }}。只导出轨道上有片段的部分，片头、片尾和片段之间的空白不会写入文件。导出为只读操作，不会改动时间轴。MP4 若浏览器无法稳定编码，将自动降级为 WebM。</p>
+    <p class="hint">预计导出：{{ rangeSummary }}。只导出轨道上有片段的部分，片头、片尾和片段之间的空白不会写入文件。导出帧率与项目帧率不同时会按时间重采样，不会改变播放速度。导出为只读操作，不会改动时间轴。MP4 若浏览器无法稳定编码，将自动降级为 WebM。</p>
     <p v-if="!exporter.capabilities.webCodecs" class="hint">当前环境未检测到 WebCodecs VideoEncoder，将走 MediaRecorder 任务框架。</p>
     <template #footer>
       <button type="button" @click="exporter.close">取消</button>

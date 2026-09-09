@@ -3,6 +3,13 @@ import { computed, ref } from 'vue'
 import Modal from '@/components/layout/Modal.vue'
 import { useEditorStore } from '@/stores/editor'
 import { formatBytes, formatDateTime } from '@/utils/format'
+import { matchingCanvasPreset } from '@/utils/scene/canvas'
+import type { ProjectSummary } from '@/types/project'
+
+function ratioLabel(item: Pick<ProjectSummary, 'width' | 'height'>): string {
+  const preset = matchingCanvasPreset(item.width, item.height)
+  return preset === 'custom' ? `${item.width}×${item.height}` : preset
+}
 
 const emit = defineEmits<{ close: [] }>()
 const editor = useEditorStore()
@@ -58,7 +65,8 @@ async function remove(id: string): Promise<void> {
         <article v-for="item in editor.summaries" :key="item.id" class="project-card" :class="{ current: item.id === editor.project.id }">
           <button type="button" class="project-thumb" :aria-label="`打开 ${item.name}`" @click="open(item.id)">
             <img v-if="item.thumbnailUrl" :src="item.thumbnailUrl" :alt="item.name" />
-            <span v-else>暂无画面</span>
+            <span v-else class="thumb-fallback">暂无画面</span>
+            <span class="project-ratio">{{ ratioLabel(item) }}</span>
           </button>
           <div class="project-meta">
             <input v-if="renaming === item.id" v-model="renameValue" @blur="commitRename" @keydown.enter="commitRename" />

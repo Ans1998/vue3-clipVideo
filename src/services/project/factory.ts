@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid'
 import type { EditorProject, TimelineTrack, TrackType } from '@/types/editor'
+import { DEFAULT_TRANSITION } from '@/types/editor'
 import { toTrackType, TYPE_LABEL } from '@/utils/timeline/tracks'
 
 export const DEFAULT_TRACKS: TimelineTrack[] = [
@@ -13,7 +14,7 @@ export function createEmptyProject(name = '未命名项目'): EditorProject {
   return {
     id: nanoid(),
     name,
-    settings: { width: 1920, height: 1080, fps: 30, durationFrames: 900 },
+    settings: { width: 1920, height: 1080, fps: 30, durationFrames: 900, rippleEdit: true },
     materials: [],
     tracks: structuredClone(DEFAULT_TRACKS),
     clips: [],
@@ -58,10 +59,21 @@ export function normalizeProject(project: EditorProject): EditorProject {
     }
   })
   project.clips.forEach((clip) => {
+    if (typeof clip.speed !== 'number' || !Number.isFinite(clip.speed)) clip.speed = 1
+    if (typeof clip.fadeInFrames !== 'number') clip.fadeInFrames = 0
+    if (typeof clip.fadeOutFrames !== 'number') clip.fadeOutFrames = 0
+    if (!clip.transitionIn) clip.transitionIn = clip.fadeInFrames > 0 ? { kind: 'fade', durationFrames: clip.fadeInFrames } : { ...DEFAULT_TRANSITION }
+    if (!clip.transitionOut) clip.transitionOut = clip.fadeOutFrames > 0 ? { kind: 'fade', durationFrames: clip.fadeOutFrames } : { ...DEFAULT_TRANSITION }
+    if (!clip.filter) clip.filter = { brightness: 1, contrast: 1, saturation: 1 }
+    if (clip.audio) {
+      if (typeof clip.audio.fadeInFrames !== 'number') clip.audio.fadeInFrames = 0
+      if (typeof clip.audio.fadeOutFrames !== 'number') clip.audio.fadeOutFrames = 0
+    }
     if (!clip.text) return
     if (typeof clip.text.italic !== 'boolean') clip.text.italic = false
     if (typeof clip.text.underline !== 'boolean') clip.text.underline = false
     if (typeof clip.text.strikethrough !== 'boolean') clip.text.strikethrough = false
   })
+  if (typeof project.settings.rippleEdit !== 'boolean') project.settings.rippleEdit = true
   return project
 }

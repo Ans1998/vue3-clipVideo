@@ -8,6 +8,7 @@ export type JianYingMetaType = 'video' | 'photo' | 'music'
 
 export interface JianYingPackedResource {
   materialId: string
+  sourceId: string
   kind: JianYingResourceKind
   metetype: JianYingMetaType
   fileName: string
@@ -57,28 +58,46 @@ export function usedMaterialIds(project: EditorProject): Set<string> {
   return new Set(project.clips.map((clip) => clip.materialId).filter((id): id is string => Boolean(id)))
 }
 
+export function audioAliasId(materialId: string): string {
+  return `audio-${materialId}`
+}
+
+function packMaterial(material: Material, project: EditorProject, placeholder: string, usedNames: Set<string>, kind = resourceKind(material.type), materialId = material.id): JianYingPackedResource {
+  const fileName = uniqueFileName(material, usedNames)
+  const relativePath = `Resources/local/${kind}/${fileName}`
+  return {
+    materialId,
+    sourceId: material.id,
+    kind,
+    metetype: kind === 'audio' ? 'music' : metaTypeOf(material.type),
+    fileName,
+    relativePath,
+    draftPath: `${placeholder}/${relativePath}`,
+    metaPath: `./${relativePath}`,
+    extraInfo: fileName,
+    durationUs: material.type === 'image' && kind !== 'audio' ? JIANYING_PHOTO_DURATION_US : framesToUs(material.durationFrames ?? project.settings.fps, project.settings.fps),
+    width: material.width ?? project.settings.width,
+    height: material.height ?? project.settings.height,
+  }
+}
+
 export function planJianYingResources(project: EditorProject, draftId: string): JianYingPackedResource[] {
   const placeholder = draftPathPlaceholder(draftId)
   const usedNames = new Set<string>()
   const needed = usedMaterialIds(project)
-  return project.materials.filter((material) => needed.has(material.id)).map((material) => {
-    const kind = resourceKind(material.type)
-    const fileName = uniqueFileName(material, usedNames)
-    const relativePath = `Resources/local/${kind}/${fileName}`
-    return {
-      materialId: material.id,
-      kind,
-      metetype: metaTypeOf(material.type),
-      fileName,
-      relativePath,
-      draftPath: `${placeholder}/${relativePath}`,
-      metaPath: `./${relativePath}`,
-      extraInfo: fileName,
-      durationUs: material.type === 'image' ? JIANYING_PHOTO_DURATION_US : framesToUs(material.durationFrames ?? project.settings.fps, project.settings.fps),
-      width: material.width ?? project.settings.width,
-      height: material.height ?? project.settings.height,
-    }
+  const packs = project.materials.filter((material) => needed.has(material.id)).map((material) => packMaterial(material, project, placeholder, usedNames))
+  const videoUsedAsAudio = new Set(
+    project.clips
+      .filter((clip) => clip.type === 'audio' && clip.materialId)
+      .map((clip) => project.materials.find((material) => material.id === clip.materialId))
+      .filter((material): material is Material => material?.type === 'video')
+      .map((material) => material.id),
+  )
+  videoUsedAsAudio.forEach((id) => {
+    const material = project.materials.find((item) => item.id === id)
+    if (material) packs.push(packMaterial(material, project, placeholder, usedNames, 'audio', audioAliasId(id)))
   })
+  return packs
 }
 
 export async function loadMaterialBlob(material: Material): Promise<Blob | null> {

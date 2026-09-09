@@ -53,7 +53,7 @@ export class WebVideoExporter implements VideoExporter {
     if (!sourceCtx || !outputCtx) throw new Error('无法创建导出画布')
 
     handlers.onProgress?.({ currentFrame: 0, totalFrames, percent: 0, elapsedMs: 0, remainingMs: null, message: '正在混合音频...' })
-    const audioBuffer = await mixOccupiedAudio(project, frames, options.fps)
+    const audioBuffer = await mixOccupiedAudio(project, frames, project.settings.fps, options.fps)
     if (signal.aborted) throw abortError()
     const mimeType = pickRecorderMimeType(options.format, Boolean(audioBuffer))
     if (!mimeType) throw new Error('当前浏览器不支持视频录制，请改用更新的 Chrome / Edge')

@@ -9,6 +9,7 @@ import { alignedPositions } from '@/utils/scene/align'
 import { createTrack } from '@/utils/timeline/tracks'
 import { groupResizePatches } from '@/utils/scene/groupResize'
 import { sourceFrame } from '@/services/renderer/SceneRenderer'
+import { mediaCacheKey } from '@/services/renderer/MaterialAssetLoader'
 
 describe('timecode', () => {
   it('round-trips HH:MM:SS:FF', () => {
@@ -98,6 +99,51 @@ describe('jianying mapper', () => {
     expect(mapped.x).toBe(0)
     expect(mapped.y).toBe(0)
   })
+
+  it('writes source duration and speed materials for a 2x clip', () => {
+    const project = createEmptyProject('变速')
+    project.materials.push({ id: 'mat-v', type: 'video', name: 'clip.mp4', mimeType: 'video/mp4', size: 12 })
+    project.clips.push({
+      id: 'v-1',
+      trackId: 'visual-1',
+      type: 'video',
+      materialId: 'mat-v',
+      startFrame: 0,
+      durationFrames: 45,
+      offsetFrame: 10,
+      speed: 2,
+      name: 'clip',
+      zIndex: 0,
+      locked: false,
+      transform: { ...DEFAULT_TRANSFORM },
+    })
+    const draftId = '0E685133-18CE-45ED-8CB8-2904A212EC80'
+    const resources = planJianYingResources(project, draftId)
+    const { content } = mapProjectToDraft(project, resources, draftId)
+    const materials = content.materials as { speeds: Array<{ speed: number }> }
+    const tracks = content.tracks as Array<{ type: string; segments: Array<{ speed: number; source_timerange: { duration: number } }> }>
+    const segment = tracks.find((track) => track.type === 'video')?.segments[0]
+    expect(segment?.speed).toBe(2)
+    expect(segment?.source_timerange.duration).toBe(framesToUs(90, 30))
+    expect(materials.speeds.some((item) => item.speed === 2)).toBe(true)
+  })
+
+  it('maps detached video audio onto an audio resource alias', () => {
+    const project = createEmptyProject('样本')
+    project.materials.push({ id: 'mat-v', type: 'video', name: 'clip.mp4', mimeType: 'video/mp4', size: 12 })
+    project.clips.push(
+      { id: 'v-1', trackId: 'visual-1', type: 'video', materialId: 'mat-v', startFrame: 0, durationFrames: 30, offsetFrame: 0, name: 'clip', zIndex: 0, locked: false, transform: { ...DEFAULT_TRANSFORM } },
+      { id: 'a-1', trackId: 'audio-1', type: 'audio', materialId: 'mat-v', startFrame: 0, durationFrames: 30, offsetFrame: 0, name: 'clip audio', zIndex: 1, locked: false, transform: { ...DEFAULT_TRANSFORM } },
+    )
+    const draftId = '0E685133-18CE-45ED-8CB8-2904A212EC80'
+    const resources = planJianYingResources(project, draftId)
+    const { content } = mapProjectToDraft(project, resources, draftId)
+    const materials = content.materials as { videos: Array<{ id: string; path: string }>; audios: Array<{ id: string; path: string }> }
+    const tracks = content.tracks as Array<{ type: string; segments: Array<{ material_id: string }> }>
+    expect(materials.audios[0].id).toBe('audio-mat-v')
+    expect(materials.audios[0].path).toContain('/Resources/local/audio/')
+    expect(tracks.find((track) => track.type === 'audio')?.segments[0].material_id).toBe('audio-mat-v')
+  })
 })
 
 describe('timeline helpers', () => {
@@ -106,6 +152,13 @@ describe('timeline helpers', () => {
     const extra = createTrack(project, 'video')
     expect(project.tracks.some((track) => track.id === extra.id)).toBe(true)
     expect(sourceFrame({ offsetFrame: 10, startFrame: 20, durationFrames: 30, id: 'c', trackId: extra.id, type: 'video', name: '', zIndex: 0, locked: false, transform: DEFAULT_TRANSFORM }, 25)).toBe(15)
+    expect(sourceFrame({ offsetFrame: 10, startFrame: 20, durationFrames: 30, speed: 2, id: 'd', trackId: extra.id, type: 'video', name: '', zIndex: 0, locked: false, transform: DEFAULT_TRANSFORM }, 25)).toBe(20)
+  })
+
+  it('gives overlapping clips from the same video their own cache keys', () => {
+    expect(mediaCacheKey({ id: 'a', type: 'video', materialId: 'mat' })).toBe('clip:a')
+    expect(mediaCacheKey({ id: 'b', type: 'video', materialId: 'mat' })).toBe('clip:b')
+    expect(mediaCacheKey({ id: 'a', type: 'image', materialId: 'mat' })).toBe('mat:mat')
   })
 
   it('aligns selected clips to the left', () => {

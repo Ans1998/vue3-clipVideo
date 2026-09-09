@@ -3,6 +3,12 @@ import { computed, ref } from 'vue'
 import { useEditorStore } from '@/stores/editor'
 import type { Material, MaterialType } from '@/types/editor'
 import { frameToTimecode } from '@/utils/timeline/timecode'
+import UiIcon from '@/components/layout/UiIcon.vue'
+import UiTooltip from '@/components/layout/UiTooltip.vue'
+
+defineProps<{ collapsed?: boolean }>()
+const emit = defineEmits<{ toggleCollapse: [] }>()
+
 
 const editor = useEditorStore()
 const input = ref<HTMLInputElement>()
@@ -76,11 +82,22 @@ function seekThumb(event: Event): void {
 </script>
 
 <template>
-  <div class="panel-heading"><span>素材</span><button class="icon-button" title="导入素材" @click="input?.click()">＋</button></div>
+  <div class="panel-heading">
+    <span v-if="!collapsed">素材</span>
+    <div class="panel-heading-actions">
+      <UiTooltip v-if="!collapsed" text="导入素材" placement="bottom">
+        <button class="btn-icon" type="button" aria-label="导入素材" @click="input?.click()"><UiIcon name="plus" /></button>
+      </UiTooltip>
+      <UiTooltip :text="collapsed ? '展开素材' : '收起素材'" placement="bottom">
+        <button class="btn-icon" type="button" :aria-label="collapsed ? '展开素材' : '收起素材'" @click="emit('toggleCollapse')"><UiIcon :name="collapsed ? 'panelLeftOpen' : 'panelLeft'" /></button>
+      </UiTooltip>
+    </div>
+  </div>
+  <div v-show="!collapsed" class="panel-body">
   <input ref="input" hidden type="file" multiple accept="video/*,audio/*,image/*" @change="addFiles" />
   <input ref="relinkInput" hidden type="file" accept="video/*,audio/*,image/*" @change="onRelink" />
   <div class="material-tabs"><button v-for="tab in [{ id: 'all', name: '全部' }, { id: 'video', name: '视频' }, { id: 'image', name: '图片' }, { id: 'audio', name: '音频' }]" :key="tab.id" :class="{ active: filter === tab.id }" @click="filter = tab.id as 'all' | MaterialType">{{ tab.name }}</button></div>
-  <button class="upload-zone" :class="{ dragging: draggingFiles }" @click="input?.click()" @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDrop"><span>⇧</span><b>导入本地素材</b><small>拖入或点击选择视频、图片、音频</small></button>
+  <button class="upload-zone" :class="{ dragging: draggingFiles }" @click="input?.click()" @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDrop"><b>导入本地素材</b><small>拖入或点击选择视频、图片、音频</small></button>
   <p v-if="error" class="error-message">{{ error }}</p>
   <div class="material-list" @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDrop">
     <article v-for="material in filtered" :key="material.id" class="material-card" :class="[material.type, { missing: material.missing }]">
@@ -92,13 +109,13 @@ function seekThumb(event: Event): void {
           <span class="material-type">{{ typeLabel(material.type) }}</span>
           <span v-if="durationLabel(material)" class="material-duration">{{ durationLabel(material) }}</span>
           <span v-if="material.missing" class="material-missing">丢失</span>
-          <span class="material-add">＋</span>
+          <span class="material-add"><UiIcon name="plus" :size="18" /></span>
         </span>
         <span class="material-name">{{ material.name }}</span>
       </button>
       <div class="material-card-actions">
         <button v-if="material.missing" type="button" class="material-action" title="重新关联文件" @click="startRelink(material.id)">关联</button>
-        <button type="button" class="material-action danger" title="删除素材" @click="pendingDelete = material.id">×</button>
+        <button type="button" class="material-action danger" title="删除素材" @click="pendingDelete = material.id"><UiIcon name="close" :size="12" /></button>
       </div>
     </article>
     <p v-if="!filtered.length" class="empty-state">暂无素材<br />拖入视频、图片或音频</p>
@@ -108,5 +125,6 @@ function seekThumb(event: Event): void {
     <button type="button" @click="pendingDelete = null">取消</button>
     <button type="button" class="danger-button" @click="confirmDelete">删除</button>
   </div>
-  <button class="add-text" @click="editor.addText">T　添加文字</button>
+  <button class="add-text" @click="editor.addText"><UiIcon name="type" />添加文字</button>
+  </div>
 </template>

@@ -1,11 +1,12 @@
 import type { EditorProject, TimelineClip } from '@/types/editor'
 import { isTrackHidden } from '@/utils/timeline/tracks'
 import { canvasFont, applyItalicSkew, textLineStart, textLineWidth, underlineY } from '@/utils/scene/textStyle'
+import { canvasFilter, clipMotion, clipSpeed } from '@/utils/timeline/clipPlayback'
 
 export type SceneSource = CanvasImageSource
 
 export interface SceneAssetResolver {
-  get(materialId: string): SceneSource | undefined
+  get(clip: TimelineClip): SceneSource | undefined
 }
 
 export function resolveActiveClips(project: EditorProject, currentFrame: number): TimelineClip[] {
@@ -16,7 +17,7 @@ export function resolveActiveClips(project: EditorProject, currentFrame: number)
 }
 
 export function sourceFrame(clip: TimelineClip, currentFrame: number): number {
-  return clip.offsetFrame + currentFrame - clip.startFrame
+  return clip.offsetFrame + (currentFrame - clip.startFrame) * clipSpeed(clip)
 }
 
 export class CanvasSceneRenderer {
@@ -26,20 +27,22 @@ export class CanvasSceneRenderer {
     ctx.fillStyle = '#10141d'
     ctx.fillRect(0, 0, width, height)
     resolveActiveClips(project, currentFrame).forEach((clip) => {
-      if (clip.type !== 'audio') this.renderClip(ctx as CanvasRenderingContext2D, clip, assets)
+      if (clip.type !== 'audio') this.renderClip(ctx as CanvasRenderingContext2D, clip, currentFrame, assets, width, height)
     })
   }
 
-  private renderClip(ctx: CanvasRenderingContext2D, clip: TimelineClip, assets: SceneAssetResolver): void {
+  private renderClip(ctx: CanvasRenderingContext2D, clip: TimelineClip, frame: number, assets: SceneAssetResolver, canvasWidth: number, canvasHeight: number): void {
     const transform = clip.transform
+    const motion = clipMotion(clip, frame, canvasWidth, canvasHeight)
     ctx.save()
-    ctx.translate(transform.x, transform.y)
+    ctx.translate(transform.x + motion.dx, transform.y + motion.dy)
     ctx.rotate(transform.rotation * Math.PI / 180)
-    ctx.scale(transform.scaleX, transform.scaleY)
-    ctx.globalAlpha = transform.opacity
+    ctx.scale(transform.scaleX * motion.scale, transform.scaleY * motion.scale)
+    ctx.globalAlpha = transform.opacity * motion.opacity
+    try { ctx.filter = canvasFilter(clip) } catch { /* some export canvases ignore CSS filters */ }
     if (clip.type === 'text') this.renderText(ctx, clip)
     else {
-      const source = clip.materialId ? assets.get(clip.materialId) : undefined
+      const source = assets.get(clip)
       if (source) ctx.drawImage(source, -transform.width / 2, -transform.height / 2, transform.width, transform.height)
       else this.renderPlaceholder(ctx, clip)
     }

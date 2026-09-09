@@ -30,11 +30,17 @@ export function occupiedExportFrames(project: EditorProject, startFrame: number,
   return frames
 }
 
-export function resolveExportTimeline(project: EditorProject, options: Pick<ExportOptions, 'startFrame' | 'endFrame'>): number[] {
+export function resampleOccupiedFrames(occupied: number[], sourceFps: number, exportFps: number): number[] {
+  if (!occupied.length || sourceFps === exportFps) return occupied
+  const count = Math.max(1, Math.round(occupied.length * exportFps / sourceFps))
+  return Array.from({ length: count }, (_, index) => occupied[Math.min(occupied.length - 1, Math.floor(index * sourceFps / exportFps))])
+}
+
+export function resolveExportTimeline(project: EditorProject, options: Pick<ExportOptions, 'startFrame' | 'endFrame' | 'fps'>): number[] {
   const limit = Math.max(1, project.settings.durationFrames)
   const startFrame = Math.max(0, Math.min(options.startFrame, limit))
   const endFrame = Math.max(startFrame, Math.min(options.endFrame, limit))
-  return occupiedExportFrames(project, startFrame, endFrame)
+  return resampleOccupiedFrames(occupiedExportFrames(project, startFrame, endFrame), project.settings.fps, options.fps)
 }
 
 export function playbackContentRange(project: EditorProject): { startFrame: number; endFrame: number } {
